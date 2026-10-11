@@ -1,8 +1,10 @@
 // The trees (docs/DESIGN.md section 9), through TesserAPI's request handler.
 #pragma once
 
+#include <functional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <ArduinoJson.h>
 
@@ -126,4 +128,28 @@ TEST(tree_persists_settings_only) {
     CHECK(state.find("position") == std::string::npos);
     CHECK(state.find("enabled\":false") == std::string::npos);  // axes boot disabled
     CHECK(state.find("period") == std::string::npos);
+}
+
+TEST(tree_watches_what_code_changes) {
+    // Values the control loop or code change without a tree write must be
+    // watched, or subscribers keep stale values: everything readable but
+    // the settings (written only through the tree) and tickMax (reset on read).
+    TreeRig r;
+    std::vector<std::string> unwatched;
+    std::function<void(const tesser::Object&, const std::string&, bool)> walk = [&](const tesser::Object& o,
+                                                                                    const std::string& path,
+                                                                                    bool setting) {
+        for (const tesser::Node* c = o.first(); c; c = c->next()) {
+            std::string p = path + "/" + c->name();
+            bool s = setting || c->persisted();
+            if (c->type() == tesser::NodeType::Object) {
+                walk(static_cast<const tesser::Object&>(*c), p, s);
+            } else if (c->type() == tesser::NodeType::Value && !c->watched() && !s) {
+                unwatched.push_back(p);
+            }
+        }
+    };
+    walk(r.api, "", false);
+    CHECK_EQ(unwatched.size(), size_t(1));
+    CHECK(!unwatched.empty() && unwatched[0] == "/sys/motion/tickMax");
 }

@@ -34,7 +34,9 @@ ValueNode& setting(Object& o, const char* name, Part& part, T& field) {
 void describe(Object& o, Axis& a) {
     // Controls first, then the readouts. Only position and output are charted.
     o.value("state", [&a] { return a.state(); }, {"disabled", "starting", "holding", "moving", "sensorFault"}).watch();
-    o.value("enabled", [&a] { return a.enabled(); }, [&a](bool on) { a.enable(on); });
+    // Watched: whatever the control loop or code changes (stopAll(), the
+    // manual output's timeout) reaches subscribers.
+    o.value("enabled", [&a] { return a.enabled(); }, [&a](bool on) { a.enable(on); }).watch();
     o.action("stop", [&a] { a.hold(); }).doc("Holds where the axis is").ui("icon", "stop");
     o.value("position", [&a] { return a.position(); }).unit("°").step(0.01).watch().ui("widget", "chart");
     o.value(
@@ -69,6 +71,7 @@ void describe(Object& o, Axis& a) {
             })
         .range(-1, 1)
         .step(0.01)
+        .watch()
         .doc("Drives the motor by hand while the axis is disabled, for manualTimeout unless rewritten");
     motor
         .value("duty",
@@ -85,7 +88,7 @@ void describe(Object& o, Axis& a) {
 
     auto& sensor = o.object("sensor");
     sensor.value("raw", [&a] { return a.raw(); }).unit("°").step(0.01).watch();
-    sensor.value("faults", [&a] { return a.faults(); }).doc("Failed reads since boot");
+    sensor.value("faults", [&a] { return a.faults(); }).watch().doc("Failed reads since boot");
     auto& sc = sensor.object("config").persist().label("Sensor settings").ui("collapsed");
     setting(sc, "invert", a, a.sensorConfig.invert);
     setting(sc, "offset", a, a.sensorConfig.offset).range(-360, 360).unit("°").step(0.01);
