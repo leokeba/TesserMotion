@@ -172,7 +172,7 @@ An `Axis` is a closed-loop position servo: an `AngleSensor`, a `DcMotor`, and a 
   - inside `tolerance`, u = 0 and the integral resets. The axis is `holding` when inside tolerance with its setpoint at the target.
 - **Sensor timeout:** a tick without a reading keeps the last output. Without a good reading for `sensorTimeout` (200 ms), the axis outputs 0 and its state is `sensorFault`. It resumes when readings come back, towards the same target.
 - **Enabling** goes through `starting`: the axis waits for a good reading, sets its target and setpoint to the position (so it never jumps), then runs. Axes boot disabled; an application that wants them running enables them in its setup.
-- **Disabled:** the motor gets the manual output (`motor/output`, 0 by default: a brake), and the target follows the position. Enabling or disabling resets the manual output to 0. Target writes are refused while the axis isn't running (`disabled` or `starting`), so a target set before enabling can't make it jump; manual output is refused while it's enabled.
+- **Disabled:** the motor gets the manual output (`motor/output`, 0 by default: a brake), and the target follows the position. The manual output is a deadman: not rewritten for `manualTimeout` (1 s), it drops to 0, so a client that never sends the 0 (a dropped connection, a closed tab, a killed script) can't leave the motor turning. A client that drives for longer repeats the write. Enabling or disabling resets the manual output to 0. Target writes are refused while the axis isn't running (`disabled` or `starting`), so a target set before enabling can't make it jump; manual output is refused while it's enabled.
 - **Ownership:** `claim(owner)` marks the target as driven by something (a sequence, a tracker); until `release()`, tree writes to `target` are refused with `busy`, "driven by <owner>". Code isn't refused: the application decides.
 
 **States** (an enum, read-only, watched): `disabled`, `starting` (waiting for a first reading), `holding` (at the target, within tolerance), `moving`, `sensorFault`.
@@ -197,6 +197,7 @@ When an application asks for it: an opt-in part, not described in the tree and n
 | `integralLimit` | 1 | 0–1 |
 | `derivativeFilter` | 0.2 | 0.01–1 |
 | `sensorTimeout` | 200 ms | 20–5000 |
+| `manualTimeout` | 1000 ms | 100–10 000 |
 | `minOutput`, `shape` | 0.15, 1 | 0–1, 0.1–5 |
 | PWM frequency | 15 000 Hz | set at construction |
 
@@ -313,7 +314,7 @@ azimuth/                          label from the application
   limits/       (p)               in the raw frame
     enabled, begin, end           begin and end 0..360; visibleWhen enabled
   tuning/       (p), ui collapsed
-    kp, ki, kd, tolerance, maxSpeed, integralLimit, derivativeFilter, sensorTimeout
+    kp, ki, kd, tolerance, maxSpeed, integralLimit, derivativeFilter, sensorTimeout, manualTimeout
 ```
 
 `position`, `target` and `output` have `ui.widget "chart"`, which replaces Teleplot. TesserUI keeps their history, so the device stores nothing (TesserUI §7.7).
@@ -389,7 +390,7 @@ Measured as in TesserAPI §15 and TesserKIT §11: an example built with and with
 1. **Host tests** (CMake, ASan and UBSan, the warnings of TesserAPI's AGENTS.md), against `test/fake_hw.*`:
    - **`tessermotion_testing`:** a CMake library with the fakes (`fake_hw.h`: GPIO, PWM, I2C register files with NACKs and a stuck bus, a settable clock, a control task run by hand) and the plant (`plant.h`), for applications' host tests too.
    - **Plant:** a geared DC motor and its encoder in one object, a `DcMotor` and an `AngleSensor`, so `Axis axis(plant, plant)` runs the output mapping too. Speed follows the duty with a first-order lag (τ 50 ms, 30 °/s at full duty), above a dead band of 0.12 that static friction makes (below `minOutput`, as on the heliostat); duty 0 brakes. The encoder quantizes to 14 bits after ±0.01° of noise, and its reads can be made to fail.
-   - **Axis:** reaches and holds targets within tolerance, at 20 and 50 Hz; never crosses the forbidden arc (randomized targets, offsets, inversion and speeds); clamps to the nearer end; slew speed respected; sensor timeout stops the motor and recovers; no jump at start; an offset or inversion change doesn't move the motor and keeps the limits at the same stops; disabled means the manual output; the integral removes the error a dead band leaves.
+   - **Axis:** reaches and holds targets within tolerance, at 20 and 50 Hz; never crosses the forbidden arc (randomized targets, offsets, inversion and speeds); clamps to the nearer end; slew speed respected; sensor timeout stops the motor and recovers; no jump at start; an offset or inversion change doesn't move the motor and keeps the limits at the same stops; disabled means the manual output, which drops to 0 when not rewritten for `manualTimeout`; the integral removes the error a dead band leaves.
    - **Motion:** tick order (every sense, then every update, in add order), the task and its statistics, `stopAll`, an application part setting a target inside the tick.
    - **Autotune** *(later)* finds the plant's Ku and Tu within 20 % of their analytic values, and the gains it writes hold a target.
    - **Motor:** output mapping (clamping, NaN, shape), invert, the TB6612 truth table on fake GPIOs, standby held low when the PWM can't attach.

@@ -38,6 +38,9 @@ public:
         float integralLimit = 1;        // the integral term's limit, as a share of full output
         float derivativeFilter = 0.2f;  // weight of each new velocity sample (1: unfiltered)
         uint32_t sensorTimeoutMs = 200;
+        // A manual output not rewritten for this long drops to 0: a
+        // deadman for a client that never sends the 0.
+        uint32_t manualTimeoutMs = 1000;
     };
     struct SensorConfig {
         bool invert = false;  // the output frame turns the other way
@@ -76,7 +79,8 @@ public:
     std::string owner();
     // Holds where the axis is: stops a slew.
     void hold();
-    // Drives the motor by hand, -1..1. False unless the axis is disabled.
+    // Drives the motor by hand, -1..1, for manualTimeout unless rewritten.
+    // False unless the axis is disabled.
     bool setManualOutput(float u);
     float position();  // output frame
     float target();    // output frame
@@ -122,6 +126,8 @@ private:
     float setpoint_ = 0;  // follows the target at maxSpeed
     float error_ = 0;
     float manual_ = 0;
+    bool manualWritten_ = false;  // since the last tick
+    uint64_t manualSinceUs_ = 0;
     std::string owner_;
     // The PID's memory; lastUs_ 0: the next tick has no dt.
     uint64_t lastUs_ = 0;

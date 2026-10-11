@@ -69,7 +69,7 @@ void describe(Object& o, Axis& a) {
             })
         .range(-1, 1)
         .step(0.01)
-        .doc("Drives the motor by hand while the axis is disabled");
+        .doc("Drives the motor by hand while the axis is disabled, for manualTimeout unless rewritten");
     motor
         .value("duty",
                [&a, &m] {
@@ -105,6 +105,10 @@ void describe(Object& o, Axis& a) {
     setting(tuning, "integralLimit", a, t.integralLimit).range(0, 1).step(0.01);
     setting(tuning, "derivativeFilter", a, t.derivativeFilter).range(0.01, 1).step(0.01);
     setting(tuning, "sensorTimeout", a, t.sensorTimeoutMs).range(20, 5000).unit("ms");
+    setting(tuning, "manualTimeout", a, t.manualTimeoutMs)
+        .range(100, 10000)
+        .unit("ms")
+        .doc("A manual output not rewritten for this long drops to 0");
 }
 
 }  // namespace tessermotion

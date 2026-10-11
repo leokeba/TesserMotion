@@ -55,6 +55,7 @@ bool Axis::setManualOutput(float u) {
     Guard g(lock());
     if (enabled_) return false;
     manual_ = u;
+    manualWritten_ = true;
     return true;
 }
 
@@ -113,6 +114,12 @@ void Axis::update(uint64_t nowUs) {
     if (!enabled_) {
         // The target follows the position, for display and the next enable.
         if (hasReading_) target_ = setpoint_ = raw_;
+        if (manualWritten_) {
+            manualWritten_ = false;
+            manualSinceUs_ = nowUs;
+        } else if (nowUs - manualSinceUs_ >= uint64_t(tuning.manualTimeoutMs) * 1000) {
+            manual_ = 0;
+        }
         drive(manual_);
         return;
     }

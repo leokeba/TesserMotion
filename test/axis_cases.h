@@ -173,7 +173,7 @@ TEST(axis_disabled_outputs_zero) {
     CHECK(!s.axis.setTarget(10));
     // By hand while disabled; the target follows the position.
     CHECK(s.axis.setManualOutput(0.5f));
-    s.run(1);
+    s.run(0.5f);
     CHECK(s.plant.drivenDuty() > 0.5f);
     CHECK(apart(s.axis.target(), s.axis.position()) < 0.01f);
     // Enabling holds where it is, the manual output dropped.
@@ -214,4 +214,25 @@ TEST(axis_pid_terms) {
     s.axis.tuning.ki = 0.05f;
     s.run(10);
     CHECK(apart(s.plant.angle(), 30) < 0.1f);
+}
+
+TEST(axis_manual_output_times_out) {
+    Sim s(50, 0);
+    s.run(0.1f);
+    CHECK(s.axis.setManualOutput(0.4f));
+    s.run(0.9f);
+    CHECK(s.plant.drivenDuty() > 0.4f);
+    s.run(0.2f);  // not rewritten for 1 s: the deadman
+    CHECK_EQ(s.plant.drivenDuty(), 0.0f);
+    CHECK_EQ(s.axis.output(), 0.0f);
+    // Rewriting keeps it going.
+    for (int i = 0; i < 6; i++) {
+        CHECK(s.axis.setManualOutput(-0.4f));
+        s.run(0.5f);
+        CHECK(s.plant.drivenDuty() > 0.4f);
+    }
+    s.axis.tuning.manualTimeoutMs = 200;
+    s.axis.setManualOutput(0.4f);
+    s.run(0.3f);
+    CHECK_EQ(s.plant.drivenDuty(), 0.0f);
 }
