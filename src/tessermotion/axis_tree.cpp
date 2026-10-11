@@ -32,6 +32,10 @@ ValueNode& setting(Object& o, const char* name, Part& part, T& field) {
 }  // namespace
 
 void describe(Object& o, Axis& a) {
+    // Controls first, then the readouts. Only position and output are charted.
+    o.value("state", [&a] { return a.state(); }, {"disabled", "starting", "holding", "moving", "sensorFault"}).watch();
+    o.value("enabled", [&a] { return a.enabled(); }, [&a](bool on) { a.enable(on); });
+    o.action("stop", [&a] { a.hold(); }).doc("Holds where the axis is").ui("icon", "stop");
     o.value("position", [&a] { return a.position(); }).unit("°").step(0.01).watch().ui("widget", "chart");
     o.value(
          "target", [&a] { return a.target(); },
@@ -50,13 +54,9 @@ void describe(Object& o, Axis& a) {
         .range(0, 360)
         .unit("°")
         .step(0.01)
-        .watch()
-        .ui("widget", "chart");
+        .watch();
     o.value("error", [&a] { return a.error(); }).unit("°").watch();
     o.value("output", [&a] { return a.output(); }).watch().ui("widget", "chart");
-    o.value("state", [&a] { return a.state(); }, {"disabled", "starting", "holding", "moving", "sensorFault"}).watch();
-    o.value("enabled", [&a] { return a.enabled(); }, [&a](bool on) { a.enable(on); });
-    o.action("stop", [&a] { a.hold(); }).doc("Holds where the axis is").ui("icon", "stop");
 
     DcMotor& m = a.motor();
     auto& motor = o.object("motor");
@@ -78,7 +78,7 @@ void describe(Object& o, Axis& a) {
                })
         .unit("%")
         .watch();
-    auto& mc = motor.object("config").persist().label("Settings").ui("collapsed");
+    auto& mc = motor.object("config").persist().label("Motor settings").ui("collapsed");
     setting(mc, "invert", a, m.invert).doc("Makes a positive output increase the sensor's raw angle");
     setting(mc, "minOutput", a, m.minOutput).range(0, 1).step(0.01).doc("The duty where the motor starts to move");
     setting(mc, "shape", a, m.shape).range(0.1, 5).step(0.1);
@@ -86,11 +86,11 @@ void describe(Object& o, Axis& a) {
     auto& sensor = o.object("sensor");
     sensor.value("raw", [&a] { return a.raw(); }).unit("°").step(0.01).watch();
     sensor.value("faults", [&a] { return a.faults(); }).doc("Failed reads since boot");
-    auto& sc = sensor.object("config").persist().label("Settings").ui("collapsed");
+    auto& sc = sensor.object("config").persist().label("Sensor settings").ui("collapsed");
     setting(sc, "invert", a, a.sensorConfig.invert);
     setting(sc, "offset", a, a.sensorConfig.offset).range(-360, 360).unit("°").step(0.01);
 
-    auto& limits = o.object("limits").persist().doc("An arc of the raw frame, from begin to end in increasing angles");
+    auto& limits = o.object("limits").persist().doc("In raw sensor angles: the axis stays on the arc from begin to end, increasing");
     setting(limits, "enabled", a, a.limits.enabled);
     setting(limits, "begin", a, a.limits.begin).range(0, 360).unit("°").step(0.1).ui("visibleWhen", "enabled=true");
     setting(limits, "end", a, a.limits.end).range(0, 360).unit("°").step(0.1).ui("visibleWhen", "enabled=true");

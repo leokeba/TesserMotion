@@ -293,23 +293,23 @@ Paths below are relative to where the application mounts each part. `(p)` is per
 
 ```
 azimuth/                          label from the application
-  position      number   (w)      read-only, step 0.01, ui chart
-  target        number   (w)      0..360, step 0.01, ui chart; not_allowed unless running,
-                                  busy while claimed (§4.3)
-  error         number   (w)      read-only
-  output        number   (w)      -1..1, read-only, ui chart
   state         enum     (w)      disabled, starting, holding, moving, sensorFault
   enabled       boolean
   stop          action            the setpoint becomes the position: stops a slew, holds
+  position      number   (w)      read-only, step 0.01, ui chart
+  target        number   (w)      0..360, step 0.01; not_allowed unless running,
+                                  busy while claimed (§4.3)
+  error         number   (w)      read-only
+  output        number   (w)      -1..1, read-only, ui chart
   motor/
     output      number            -1..1; writable only while the axis is disabled (else not_allowed)
     duty        integer  (w)      0..100 %, read-only
-    config/     (p), ui collapsed
+    config/     (p), ui collapsed, label "Motor settings"
       invert, minOutput, shape
   sensor/
     raw         number   (w)      read-only
     faults      integer           read-only: failed reads since boot
-    config/     (p), ui collapsed
+    config/     (p), ui collapsed, label "Sensor settings"
       invert, offset (-360..360)
   limits/       (p)               in the raw frame
     enabled, begin, end           begin and end 0..360; visibleWhen enabled
@@ -317,7 +317,7 @@ azimuth/                          label from the application
     kp, ki, kd, tolerance, maxSpeed, integralLimit, derivativeFilter, sensorTimeout, manualTimeout
 ```
 
-`position`, `target` and `output` have `ui.widget "chart"`, which replaces Teleplot. TesserUI keeps their history, so the device stores nothing (TesserUI §7.7).
+Controls come first, then the readouts. `position` and `output` have `ui.widget "chart"`, which replaces Teleplot; `target` and `error` are plain readouts (a chart of a target over 0–360 is a flat line). The objects' names stay `config`, distinguished by their labels: renaming them would make stored settings load as defaults. TesserUI keeps their history, so the device stores nothing (TesserUI §7.7).
 
 ### 9.2 Sequencer *(later)*
 
