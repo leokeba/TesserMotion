@@ -29,6 +29,19 @@ ValueNode& setting(Object& o, const char* name, Part& part, T& field) {
         });
 }
 
+// Refuses a tree write to a claimed axis, naming the owner. The message must
+// outlive the call: requests run under the API lock, so one buffer serves
+// every axis.
+Check claimed(Axis& a) {
+    static std::string busy;
+    std::string owner = a.owner();
+    if (owner.empty()) return Check::ok();
+    busy = "driven by " + owner;
+    return Check::fail(Status::Busy, busy.c_str());
+}
+
+constexpr Check kNotRunning{Status::NotAllowed, "the axis isn't running"};
+
 }  // namespace
 
 void describe(Object& o, Axis& a) {
@@ -42,8 +55,9 @@ void describe(Object& o, Axis& a) {
     // false. Refused like target writes.
     auto jog = [&a](int direction) {
         return [&a, direction](bool pressed) {
-            if (!a.owner().empty()) return Status::Busy;
-            return a.jog(pressed ? direction : 0) ? Status::Ok : Status::NotAllowed;
+            Check c = claimed(a);
+            if (c.isOk() && !a.jog(pressed ? direction : 0)) c = kNotRunning;
+            return c;
         };
     };
     o.action("jogMinus", jog(-1)).label("Jog −").ui("widget", "hold");
@@ -51,17 +65,10 @@ void describe(Object& o, Axis& a) {
     o.value("position", [&a] { return a.position(); }).unit("°").step(0.01).watch().ui("widget", "chart");
     o.value(
          "target", [&a] { return a.target(); },
-         [&a](float deg) -> Check {
-             // The message must outlive the call; setters run under the API
-             // lock, so one buffer serves every axis.
-             static std::string busy;
-             std::string owner = a.owner();
-             if (!owner.empty()) {
-                 busy = "driven by " + owner;
-                 return Check::fail(Status::Busy, busy.c_str());
-             }
-             if (!a.setTarget(deg)) return Check::fail(Status::NotAllowed, "the axis isn't running");
-             return Check::ok();
+         [&a](float deg) {
+             Check c = claimed(a);
+             if (c.isOk() && !a.setTarget(deg)) c = kNotRunning;
+             return c;
          })
         .range(0, 360)
         .unit("°")

@@ -101,13 +101,17 @@ TEST(tree_axis_claimed_target_is_busy) {
     CHECK(reply.status == tesser::Status::Busy);
     CHECK(reply.body.find("driven by tracking") != std::string::npos);
     CHECK(r.axis.setTarget(120));  // code isn't refused
-    CHECK(r.set("/azimuth/jogPlus", "true").status == tesser::Status::Busy);
+    reply = r.set("/azimuth/jogPlus", "true");
+    CHECK(reply.status == tesser::Status::Busy);
+    CHECK(reply.body.find("driven by tracking") != std::string::npos);
     r.axis.release();
     CHECK(r.set("/azimuth/target", "130").status == tesser::Status::Ok);
     CHECK(r.set("/azimuth/jogPlus", "true").status == tesser::Status::Ok);
     CHECK(r.set("/azimuth/jogPlus", "false").status == tesser::Status::Ok);
     r.axis.enable(false);
-    CHECK(r.set("/azimuth/jogMinus", "true").status == tesser::Status::NotAllowed);
+    reply = r.set("/azimuth/jogMinus", "true");
+    CHECK(reply.status == tesser::Status::NotAllowed);
+    CHECK(reply.body.find("isn't running") != std::string::npos);
 }
 
 TEST(tree_motion) {
