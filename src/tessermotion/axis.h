@@ -38,9 +38,10 @@ public:
         float integralLimit = 1;        // the integral term's limit, as a share of full output
         float derivativeFilter = 0.2f;  // weight of each new velocity sample (1: unfiltered)
         uint32_t sensorTimeoutMs = 200;
-        // A manual output not rewritten for this long drops to 0: a
-        // deadman for a client that never sends the 0.
-        uint32_t manualTimeoutMs = 1000;
+        float jogSpeed = 5;  // °/s
+        // A manual output or a jog not renewed for this long stops: for a
+        // client that never sends the 0 or the release.
+        uint32_t deadmanMs = 1000;
     };
     struct SensorConfig {
         bool invert = false;  // the output frame turns the other way
@@ -79,9 +80,14 @@ public:
     std::string owner();
     // Holds where the axis is: stops a slew.
     void hold();
-    // Drives the motor by hand, -1..1, for manualTimeout unless rewritten.
-    // False unless the axis is disabled.
+    // Drives the motor by hand, -1..1, for the deadman time unless
+    // rewritten. False unless the axis is disabled.
     bool setManualOutput(float u);
+    // Moves the target at jogSpeed, towards increasing (direction > 0) or
+    // decreasing output-frame angles, within the limits, for the deadman
+    // time unless renewed; 0 stops, and so do setTarget(), hold(), a
+    // disable or a sensor fault. False unless the axis is running.
+    bool jog(int direction);
     float position();  // output frame
     float target();    // output frame
     float error();     // setpoint − position, along the allowed path
@@ -128,6 +134,9 @@ private:
     float manual_ = 0;
     bool manualWritten_ = false;  // since the last tick
     uint64_t manualSinceUs_ = 0;
+    int8_t jog_ = 0;  // in the raw frame: -1, 0, 1
+    bool jogWritten_ = false;
+    uint64_t jogSinceUs_ = 0;
     std::string owner_;
     // The PID's memory; lastUs_ 0: the next tick has no dt.
     uint64_t lastUs_ = 0;

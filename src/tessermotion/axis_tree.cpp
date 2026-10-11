@@ -38,6 +38,16 @@ void describe(Object& o, Axis& a) {
     // manual output's timeout) reaches subscribers.
     o.value("enabled", [&a] { return a.enabled(); }, [&a](bool on) { a.enable(on); }).watch();
     o.action("stop", [&a] { a.hold(); }).doc("Holds where the axis is").ui("icon", "stop");
+    // Hold buttons: true while pressed, renewed within the deadman, then
+    // false. Refused like target writes.
+    auto jog = [&a](int direction) {
+        return [&a, direction](bool pressed) {
+            if (!a.owner().empty()) return Status::Busy;
+            return a.jog(pressed ? direction : 0) ? Status::Ok : Status::NotAllowed;
+        };
+    };
+    o.action("jogMinus", jog(-1)).label("Jog −").ui("widget", "hold");
+    o.action("jogPlus", jog(1)).label("Jog +").ui("widget", "hold");
     o.value("position", [&a] { return a.position(); }).unit("°").step(0.01).watch().ui("widget", "chart");
     o.value(
          "target", [&a] { return a.target(); },
@@ -72,7 +82,8 @@ void describe(Object& o, Axis& a) {
         .range(-1, 1)
         .step(0.01)
         .watch()
-        .doc("Drives the motor by hand while the axis is disabled, for manualTimeout unless rewritten");
+        .ui("keepalive", 400)  // the client renews it well within the deadman (500 ms or more)
+        .doc("Drives the motor by hand while the axis is disabled, for the deadman time unless rewritten");
     motor
         .value("duty",
                [&a, &m] {
@@ -108,10 +119,11 @@ void describe(Object& o, Axis& a) {
     setting(tuning, "integralLimit", a, t.integralLimit).range(0, 1).step(0.01);
     setting(tuning, "derivativeFilter", a, t.derivativeFilter).range(0.01, 1).step(0.01);
     setting(tuning, "sensorTimeout", a, t.sensorTimeoutMs).range(20, 5000).unit("ms");
-    setting(tuning, "manualTimeout", a, t.manualTimeoutMs)
-        .range(100, 10000)
+    setting(tuning, "jogSpeed", a, t.jogSpeed).range(0.1, 90).unit("°/s").step(0.1);
+    setting(tuning, "deadman", a, t.deadmanMs)
+        .range(500, 10000)
         .unit("ms")
-        .doc("A manual output not rewritten for this long drops to 0");
+        .doc("A manual output or a jog not renewed for this long stops");
 }
 
 }  // namespace tessermotion

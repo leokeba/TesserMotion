@@ -231,8 +231,76 @@ TEST(axis_manual_output_times_out) {
         s.run(0.5f);
         CHECK(s.plant.drivenDuty() > 0.4f);
     }
-    s.axis.tuning.manualTimeoutMs = 200;
+    s.axis.tuning.deadmanMs = 200;
     s.axis.setManualOutput(0.4f);
     s.run(0.3f);
     CHECK_EQ(s.plant.drivenDuty(), 0.0f);
+}
+
+TEST(axis_jogs_at_jog_speed) {
+    Sim s(50, 100);
+    s.axis.tuning.jogSpeed = 5;
+    CHECK(!s.axis.jog(1));  // not running
+    s.start();
+    // Renewed every 300 ms as a hold button does: 3 s at 5 °/s.
+    for (int i = 0; i < 10; i++) {
+        CHECK(s.axis.jog(1));
+        s.run(0.3f);
+        CHECK(s.axis.state() == AxisState::Moving);
+    }
+    CHECK(s.axis.jog(0));
+    CHECK(fabsf(s.axis.target() - 115) < 0.2f);
+    s.run(3);
+    CHECK(s.axis.state() == AxisState::Holding);
+    CHECK(apart(s.plant.angle(), 115) < 0.15f);
+    // Backwards, in the output frame even when inverted.
+    s.axis.sensorConfig.invert = true;
+    s.axis.sensorConfig.offset = 360;
+    float shown = s.axis.position();
+    s.axis.jog(-1);
+    s.run(0.5f);
+    s.axis.jog(0);
+    s.run(2);
+    CHECK(fabsf(wrap180(s.axis.position() - (shown - 2.5f))) < 0.3f);
+}
+
+TEST(axis_jog_deadman) {
+    Sim s(50, 100);
+    s.start();
+    s.axis.jog(1);  // never released
+    s.run(3);
+    CHECK(s.axis.state() == AxisState::Holding);
+    CHECK(fabsf(s.plant.turned() - 105) < 0.3f);  // 1 s at 5 °/s
+}
+
+TEST(axis_jog_stops_at_limits_and_on_commands) {
+    Sim s(50, 295);
+    s.axis.limits = {true, 30, 300};
+    s.start();
+    for (int i = 0; i < 10; i++) {
+        s.axis.jog(1);
+        s.run(0.3f);
+    }
+    CHECK(fabsf(s.axis.target() - 300) < 1e-3f);
+    s.run(2);
+    CHECK(s.plant.angle() < 300.2f);
+    // A target, hold() and a disable each end a jog.
+    s.axis.jog(-1);
+    s.run(0.2f);
+    s.axis.setTarget(200);
+    s.run(0.6f);
+    CHECK(fabsf(s.axis.target() - 200) < 1e-3f);
+    s.axis.jog(-1);
+    s.axis.hold();
+    s.run(0.3f);
+    float held = s.axis.target();
+    s.run(0.3f);
+    CHECK_EQ(s.axis.target(), held);
+    s.axis.jog(-1);
+    s.axis.enable(false);
+    s.axis.enable(true);
+    s.run(0.5f);
+    float here = s.axis.target();
+    s.run(0.3f);
+    CHECK_EQ(s.axis.target(), here);
 }

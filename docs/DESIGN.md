@@ -1,6 +1,6 @@
 # TesserMotion design
 
-Status: phase 1 and the core of phase 2 implemented (2026-10-11): the platform layer, `DcMotor`/`Tb6612Channel`, `Mt6701`, `Axis`, `Motion` and their trees, host-tested against a simulated plant, not yet run on hardware. This is the specification the code follows; when the two disagree, fix one of them. Sections marked *(later)* are committed to but not implemented yet. References to TesserAPI, TesserUI and TesserKIT point to their own DESIGN.md: [TesserAPI](https://github.com/leokeba/TesserAPI/blob/main/docs/DESIGN.md), [TesserUI](https://github.com/leokeba/TesserUI/blob/main/docs/DESIGN.md), [TesserKIT](https://github.com/leokeba/TesserKIT/blob/main/docs/DESIGN.md).
+Status: phase 1 and the core of phase 2 implemented (2026-10-11): the platform layer, `DcMotor`/`Tb6612Channel`, `Mt6701`, `Axis`, `Motion` and their trees, host-tested against a simulated plant, and commissioned on the heliostat's two axes (through tiny-heliostat). This is the specification the code follows; when the two disagree, fix one of them. Sections marked *(later)* are committed to but not implemented yet. References to TesserAPI, TesserUI and TesserKIT point to their own DESIGN.md: [TesserAPI](https://github.com/leokeba/TesserAPI/blob/main/docs/DESIGN.md), [TesserUI](https://github.com/leokeba/TesserUI/blob/main/docs/DESIGN.md), [TesserKIT](https://github.com/leokeba/TesserKIT/blob/main/docs/DESIGN.md).
 
 ## 1. Goals
 
@@ -172,7 +172,8 @@ An `Axis` is a closed-loop position servo: an `AngleSensor`, a `DcMotor`, and a 
   - inside `tolerance`, u = 0 and the integral resets. The axis is `holding` when inside tolerance with its setpoint at the target.
 - **Sensor timeout:** a tick without a reading keeps the last output. Without a good reading for `sensorTimeout` (200 ms), the axis outputs 0 and its state is `sensorFault`. It resumes when readings come back, towards the same target.
 - **Enabling** goes through `starting`: the axis waits for a good reading, sets its target and setpoint to the position (so it never jumps), then runs. Axes boot disabled; an application that wants them running enables them in its setup.
-- **Disabled:** the motor gets the manual output (`motor/output`, 0 by default: a brake), and the target follows the position. The manual output is a deadman: not rewritten for `manualTimeout` (1 s), it drops to 0, so a client that never sends the 0 (a dropped connection, a closed tab, a killed script) can't leave the motor turning. A client that drives for longer repeats the write. Enabling or disabling resets the manual output to 0. Target writes are refused while the axis isn't running (`disabled` or `starting`), so a target set before enabling can't make it jump; manual output is refused while it's enabled.
+- **Disabled:** the motor gets the manual output (`motor/output`, 0 by default: a brake), and the target follows the position. The manual output is a deadman: not rewritten for `deadman` (1 s), it drops to 0, so a client that never sends the 0 (a dropped connection, a closed tab, a killed script) can't leave the motor turning. A client that drives for longer repeats the write; the tree hints `ui.keepalive` 400 ms, so TesserUI re-sends it while shown.
+- **Jog** (closed loop, for positioning by hand): `jog(direction)` moves the target and the setpoint together at `jogSpeed` (5 °/s), towards increasing or decreasing output-frame angles, clamped to the limits. It's a deadman too: not renewed within `deadman`, it stops. `jog(0)`, `setTarget()`, `hold()`, a disable and a sensor fault also stop it, and the axis holds where the jog left it. Refused unless the axis is running; the tree's `jogMinus` and `jogPlus` are also refused `busy` while the axis is claimed. Enabling or disabling resets the manual output to 0. Target writes are refused while the axis isn't running (`disabled` or `starting`), so a target set before enabling can't make it jump; manual output is refused while it's enabled.
 - **Ownership:** `claim(owner)` marks the target as driven by something (a sequence, a tracker); until `release()`, tree writes to `target` are refused with `busy`, "driven by <owner>". Code isn't refused: the application decides.
 
 **States** (an enum, read-only, watched): `disabled`, `starting` (waiting for a first reading), `holding` (at the target, within tolerance), `moving`, `sensorFault`.
@@ -197,7 +198,8 @@ When an application asks for it: an opt-in part, not described in the tree and n
 | `integralLimit` | 1 | 0–1 |
 | `derivativeFilter` | 0.2 | 0.01–1 |
 | `sensorTimeout` | 200 ms | 20–5000 |
-| `manualTimeout` | 1000 ms | 100–10 000 |
+| `jogSpeed` | 5 °/s | 0.1–90 |
+| `deadman` | 1000 ms | 500–10 000 (above the 400 ms keep-alive) |
 | `minOutput`, `shape` | 0.15, 1 | 0–1, 0.1–5 |
 | PWM frequency | 15 000 Hz | set at construction |
 
@@ -296,13 +298,17 @@ azimuth/                          label from the application
   state         enum     (w)      disabled, starting, holding, moving, sensorFault
   enabled       boolean  (w)
   stop          action            the setpoint becomes the position: stops a slew, holds
+  jogMinus, jogPlus  action       boolean argument, ui widget hold: true while pressed (renewed
+                                  within deadman), false on release; not_allowed unless running,
+                                  busy while claimed
   position      number   (w)      read-only, step 0.01, ui chart
   target        number   (w)      0..360, step 0.01; not_allowed unless running,
                                   busy while claimed (§4.3)
   error         number   (w)      read-only
   output        number   (w)      -1..1, read-only, ui chart
   motor/
-    output      number   (w)      -1..1; writable only while the axis is disabled (else not_allowed)
+    output      number   (w)      -1..1; writable only while the axis is disabled (else not_allowed);
+                                  ui keepalive 400 ms, against the deadman
     duty        integer  (w)      0..100 %, read-only
     config/     (p), ui collapsed, label "Motor settings"
       invert, minOutput, shape
@@ -314,7 +320,7 @@ azimuth/                          label from the application
   limits/       (p)               in the raw frame
     enabled, begin, end           begin and end 0..360; visibleWhen enabled
   tuning/       (p), ui collapsed
-    kp, ki, kd, tolerance, maxSpeed, integralLimit, derivativeFilter, sensorTimeout, manualTimeout
+    kp, ki, kd, tolerance, maxSpeed, integralLimit, derivativeFilter, sensorTimeout, jogSpeed, deadman
 ```
 
 Every value that changes without a write through the tree (the control loop, `stopAll()`, the manual output's timeout) is watched, so subscribers see it; settings, written only through the tree, aren't. Controls come first, then the readouts. `position` and `output` have `ui.widget "chart"`, which replaces Teleplot; `target` and `error` are plain readouts (a chart of a target over 0–360 is a flat line). The objects' names stay `config`, distinguished by their labels: renaming them would make stored settings load as defaults. TesserUI keeps their history, so the device stores nothing (TesserUI §7.7).
@@ -390,7 +396,7 @@ Measured as in TesserAPI §15 and TesserKIT §11: an example built with and with
 1. **Host tests** (CMake, ASan and UBSan, the warnings of TesserAPI's AGENTS.md), against `test/fake_hw.*`:
    - **`tessermotion_testing`:** a CMake library with the fakes (`fake_hw.h`: GPIO, PWM, I2C register files with NACKs and a stuck bus, a settable clock, a control task run by hand) and the plant (`plant.h`), for applications' host tests too.
    - **Plant:** a geared DC motor and its encoder in one object, a `DcMotor` and an `AngleSensor`, so `Axis axis(plant, plant)` runs the output mapping too. Speed follows the duty with a first-order lag (τ 50 ms, 30 °/s at full duty), above a dead band of 0.12 that static friction makes (below `minOutput`, as on the heliostat); duty 0 brakes. The encoder quantizes to 14 bits after ±0.01° of noise, and its reads can be made to fail.
-   - **Axis:** reaches and holds targets within tolerance, at 20 and 50 Hz; never crosses the forbidden arc (randomized targets, offsets, inversion and speeds); clamps to the nearer end; slew speed respected; sensor timeout stops the motor and recovers; no jump at start; an offset or inversion change doesn't move the motor and keeps the limits at the same stops; disabled means the manual output, which drops to 0 when not rewritten for `manualTimeout`; the integral removes the error a dead band leaves.
+   - **Axis:** reaches and holds targets within tolerance, at 20 and 50 Hz; never crosses the forbidden arc (randomized targets, offsets, inversion and speeds); clamps to the nearer end; slew speed respected; sensor timeout stops the motor and recovers; no jump at start; an offset or inversion change doesn't move the motor and keeps the limits at the same stops; disabled means the manual output, which drops to 0 when not rewritten for `deadman`; jog at `jogSpeed`, renewed or stopped by its deadman, clamped at the limits, ended by a target, a hold or a disable; the integral removes the error a dead band leaves.
    - **Motion:** tick order (every sense, then every update, in add order), the task and its statistics, `stopAll`, an application part setting a target inside the tick.
    - **Autotune** *(later)* finds the plant's Ku and Tu within 20 % of their analytic values, and the gains it writes hold a target.
    - **Motor:** output mapping (clamping, NaN, shape), invert, the TB6612 truth table on fake GPIOs, standby held low when the PWM can't attach.
@@ -437,7 +443,7 @@ TesserMotion/
 | Phase | Content | Acceptance |
 |---|---|---|
 | 1 | Packaging, platform interfaces and fakes, the plant model, CI-ready host build | An empty `Motion` ticks on the host and builds for ESP32, C3, S3 on ESP-IDF and Arduino. Done, without CI (no GitHub repository yet); the ESP-IDF build was checked on ESP32 and S3 (no RISC-V toolchain here), Arduino on all three. |
-| 2 | `DcMotor`/`Tb6612Channel`, `Mt6701`, `Axis`, `Motion`, their trees; jog with a deadman; autotune when an application asks | §11's axis tests pass (done); one axis of the heliostat holds targets from the web interface (not yet run on hardware). |
+| 2 | `DcMotor`/`Tb6612Channel`, `Mt6701`, `Axis`, `Motion`, their trees; jog with a deadman; autotune when an application asks | §11's axis tests pass (done); the heliostat's axes hold targets from the web interface (done, commissioned with tiny-heliostat). Jog done; autotune not asked for yet. |
 | 3 | `Sequencer` | The heliostat's azimuth and elevation sequences run from `x-keyframes`. |
 | 4 | `Adxl345`, `NmeaGps` | Tilt and GPS fix reported on the heliostat; the clock set from GPS through TesserKIT. |
 | 5 | Handover | TesserKIT's phase 3 (helionext) uses TesserMotion; footprint measured (§10). |

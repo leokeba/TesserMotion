@@ -12,6 +12,7 @@ void Axis::enable(bool on) {
     enabled_ = on;
     state_ = on ? AxisState::Starting : AxisState::Disabled;
     manual_ = 0;
+    jog_ = 0;
     reset();
 }
 
@@ -28,6 +29,7 @@ bool Axis::setTarget(float degrees, bool slew) {
     if (!enabled_ || state_ == AxisState::Starting || !(degrees == degrees)) return false;
     target_ = clamp(toRaw(degrees));
     if (!slew) setpoint_ = target_;
+    jog_ = 0;
     return true;
 }
 
@@ -49,6 +51,16 @@ std::string Axis::owner() {
 void Axis::hold() {
     Guard g(lock());
     if (hasReading_) target_ = setpoint_ = raw_;
+    jog_ = 0;
+}
+
+bool Axis::jog(int direction) {
+    Guard g(lock());
+    if (!enabled_ || state_ == AxisState::Starting) return false;
+    int8_t d = direction > 0 ? 1 : direction < 0 ? -1 : 0;
+    jog_ = sensorConfig.invert ? static_cast<int8_t>(-d) : d;
+    jogWritten_ = true;
+    return true;
 }
 
 bool Axis::setManualOutput(float u) {
@@ -117,7 +129,7 @@ void Axis::update(uint64_t nowUs) {
         if (manualWritten_) {
             manualWritten_ = false;
             manualSinceUs_ = nowUs;
-        } else if (nowUs - manualSinceUs_ >= uint64_t(tuning.manualTimeoutMs) * 1000) {
+        } else if (nowUs - manualSinceUs_ >= uint64_t(tuning.deadmanMs) * 1000) {
             manual_ = 0;
         }
         drive(manual_);
@@ -130,6 +142,7 @@ void Axis::update(uint64_t nowUs) {
     }
     if (nowUs - lastReadingUs_ > uint64_t(tuning.sensorTimeoutMs) * 1000) {
         state_ = AxisState::SensorFault;
+        jog_ = 0;
         reset();
         return drive(0);
     }
@@ -138,13 +151,22 @@ void Axis::update(uint64_t nowUs) {
     float dt = lastUs_ ? static_cast<float>(nowUs - lastUs_) * 1e-6f : 0;
     lastUs_ = nowUs;
 
+    // A jog carries the target and the setpoint along together.
+    if (jogWritten_) {
+        jogWritten_ = false;
+        jogSinceUs_ = nowUs;
+    } else if (jog_ && nowUs - jogSinceUs_ >= uint64_t(tuning.deadmanMs) * 1000) {
+        jog_ = 0;
+    }
+    if (jog_) target_ = setpoint_ = clamp(setpoint_ + static_cast<float>(jog_) * tuning.jogSpeed * dt);
+
     // The setpoint follows the target along the allowed path.
     float toGo = path(setpoint_, target_);
-    bool slewing = false;
+    bool slewing = jog_ != 0;
     if (tuning.maxSpeed > 0) {
         float stepMax = tuning.maxSpeed * dt;
         float step = fminf(fmaxf(toGo, -stepMax), stepMax);
-        slewing = step != toGo;
+        slewing = slewing || step != toGo;
         setpoint_ = slewing ? wrap360(setpoint_ + step) : target_;
     } else {
         setpoint_ = target_;
