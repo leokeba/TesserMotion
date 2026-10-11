@@ -1,0 +1,1 @@
+{"type":"object","children":{"period":{"type":"number","unit":"ms"},"tickMax":{"type":"integer","description":"The longest tick since the last read","unit":"µs"},"overruns":{"type":"integer","description":"Ticks longer than the period"},"stopAll":{"type":"action","description":"Disables every axis","ui":{"style":"danger","icon":"stop"}}}}

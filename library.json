@@ -1,0 +1,26 @@
+{
+  "name": "TesserMotion",
+  "version": "0.1.0",
+  "description": "Motion control and sensing for ESP32 on TesserAPI: DC motors on a TB6612, MT6701 encoders, closed-loop axes with limits and slew, in a fixed-rate control task. Every part describes itself into a TesserAPI tree, drawn by TesserUI without UI code. Arduino and ESP-IDF.",
+  "keywords": ["motor", "servo", "pid", "encoder", "tb6612", "mt6701", "esp32", "tesserapi"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/leokeba/TesserMotion.git"
+  },
+  "authors": [{ "name": "Leo Baque", "maintainer": true }],
+  "license": "MIT",
+  "frameworks": ["arduino", "espidf"],
+  "platforms": ["espressif32"],
+  "headers": ["TesserMotion.h"],
+  "dependencies": [
+    { "name": "TesserAPI", "version": "https://github.com/leokeba/TesserAPI.git" }
+  ],
+  "build": {
+    "srcDir": "src",
+    "includeDir": "src",
+    "flags": ["-std=gnu++17"]
+  },
+  "export": {
+    "exclude": ["test", "build", ".github", "fixtures"]
+  }
+}

@@ -1,0 +1,17 @@
+version: "0.1.0"
+description: "Motion control and sensing for ESP32 on TesserAPI: DC motors, encoders, closed-loop axes, as TesserAPI subtrees"
+url: "https://github.com/leokeba/TesserMotion"
+license: "MIT"
+# TesserAPI is required but not listed: add it to the project
+# (EXTRA_COMPONENT_DIRS or a dependency of your main component).
+# CMakeLists.txt finds it under any component name ending in "tesserapi".
+dependencies:
+  idf:
+    version: ">=5.2"
+files:
+  exclude:
+    - "test/**/*"
+    - "build/**/*"
+    - ".github/**/*"
+    - "fixtures/**/*"
+    - "docs/**/*"
