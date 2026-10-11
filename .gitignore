@@ -1,0 +1,8 @@
+AGENTS.md
+build/
+.pio/
+secrets.h
+managed_components/
+dependencies.lock
+sdkconfig
+sdkconfig.old
