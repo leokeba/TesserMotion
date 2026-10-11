@@ -304,3 +304,20 @@ TEST(axis_jog_stops_at_limits_and_on_commands) {
     s.run(0.3f);
     CHECK_EQ(s.axis.target(), here);
 }
+
+TEST(axis_stops_a_hand_driven_motor) {
+    Sim s(50, 0);
+    s.run(0.1f);
+    s.axis.setManualOutput(0.5f);
+    s.run(0.2f);
+    s.axis.hold();  // the tree's stop
+    s.run(0.1f);
+    CHECK_EQ(s.plant.drivenDuty(), 0.0f);
+    CHECK_EQ(s.axis.output(), 0.0f);
+    // stopAll() too, though the axis is already disabled.
+    s.axis.setManualOutput(-0.5f);
+    s.run(0.2f);
+    s.motion.stopAll();
+    s.run(0.1f);
+    CHECK_EQ(s.plant.drivenDuty(), 0.0f);
+}

@@ -78,7 +78,8 @@ public:
     void release();
     // Empty when unclaimed.
     std::string owner();
-    // Holds where the axis is: stops a slew.
+    // Stops whatever the axis does: holds where it is (ending a slew or a
+    // jog) and zeroes the manual output.
     void hold();
     // Drives the motor by hand, -1..1, for the deadman time unless
     // rewritten. False unless the axis is disabled.

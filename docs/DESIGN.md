@@ -82,7 +82,7 @@ void setup() {
 - **`step(nowUs)` is public.** Tests call it directly with a fake clock, without a task. So does an application that wants to drive the loop itself (it calls `begin()`, never `start()`).
 - **Constructors do nothing but store arguments** (the static-initialization rule, TesserKIT's AGENTS.md). Hardware setup happens in `Motion::begin()`, which calls each part's `begin()` in the order they were added.
 - **Statistics:** the task measures its period and the duration of each tick. `Motion` reports `period` (ms, the last), `tickMax` (µs since the last read) and `overruns` (ticks that took longer than the period) as read-only values (§9.4). These replace the heliostat's "Servo loop lag" and "Control loop slow" prints.
-- **`stopAll()`** disables every axis (and later stops every sequencer), from any task. An application calls it before a firmware update (TesserKIT's `dev.onState()`, state `Updating`) and from its own emergency paths.
+- **`stopAll()`** disables every axis and zeroes its manual output (and later stops every sequencer), from any task. An application calls it before a firmware update (TesserKIT's `dev.onState()`, state `Updating`) and from its own emergency paths.
 
 ### 3.3 Platform layer
 
@@ -178,7 +178,7 @@ An `Axis` is a closed-loop position servo: an `AngleSensor`, a `DcMotor`, and a 
 
 **States** (an enum, read-only, watched): `disabled`, `starting` (waiting for a first reading), `holding` (at the target, within tolerance), `moving`, `sensorFault`.
 
-**Programmatic API** (for applications such as the sun tracker): `setTarget(deg)` (through the slew), `setTargetNow(deg)` (the setpoint jumps; sequencers and trackers that already move smoothly), `hold()`, `target()`, `position()`, `error()`, `output()`, `raw()`, `faults()`, `enable(bool)`, `enabled()`, `state()`, `setManualOutput(u)`, `claim(owner)`, `release()`, `owner()`. They take Motion's lock and may be called from any task, a part's `update()` included. The settings are public fields (`tuning`, `sensorConfig`, `limits`; the motor's `invert`, `minOutput`, `shape`): set them before `Motion::start()`, or under `axis.lock()` afterwards, as the tree does.
+**Programmatic API** (for applications such as the sun tracker): `setTarget(deg)` (through the slew), `setTargetNow(deg)` (the setpoint jumps; sequencers and trackers that already move smoothly), `hold()` (stops whatever the axis does: a slew, a jog, a manual output), `target()`, `position()`, `error()`, `output()`, `raw()`, `faults()`, `enable(bool)`, `enabled()`, `state()`, `setManualOutput(u)`, `claim(owner)`, `release()`, `owner()`. They take Motion's lock and may be called from any task, a part's `update()` included. The settings are public fields (`tuning`, `sensorConfig`, `limits`; the motor's `invert`, `minOutput`, `shape`): set them before `Motion::start()`, or under `axis.lock()` afterwards, as the tree does.
 
 ### 4.4 Relay autotune *(later)*
 
@@ -297,7 +297,8 @@ Paths below are relative to where the application mounts each part. `(p)` is per
 azimuth/                          label from the application
   state         enum     (w)      disabled, starting, holding, moving, sensorFault
   enabled       boolean  (w)
-  stop          action            the setpoint becomes the position: stops a slew, holds
+  stop          action            stops whatever the axis does: the setpoint becomes the position
+                                  (ending a slew or a jog), and the manual output 0
   jogMinus, jogPlus  action       boolean argument, ui widget hold: true while pressed (renewed
                                   within deadman), false on release; not_allowed unless running,
                                   busy while claimed

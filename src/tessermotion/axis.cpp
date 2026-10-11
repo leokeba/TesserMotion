@@ -52,6 +52,7 @@ void Axis::hold() {
     Guard g(lock());
     if (hasReading_) target_ = setpoint_ = raw_;
     jog_ = 0;
+    manual_ = 0;
 }
 
 bool Axis::jog(int direction) {
@@ -197,7 +198,11 @@ void Axis::update(uint64_t nowUs) {
     drive(u);
 }
 
-void Axis::stop() { enable(false); }
+// Disabling alone would leave a disabled axis's manual output running.
+void Axis::stop() {
+    enable(false);
+    hold();
+}
 
 void Axis::reset() {
     integral_ = 0;

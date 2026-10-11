@@ -50,7 +50,7 @@ void describe(Object& o, Axis& a) {
     // Watched: whatever the control loop or code changes (stopAll(), the
     // manual output's timeout) reaches subscribers.
     o.value("enabled", [&a] { return a.enabled(); }, [&a](bool on) { a.enable(on); }).watch();
-    o.action("stop", [&a] { a.hold(); }).doc("Holds where the axis is").ui("icon", "stop");
+    o.action("stop", [&a] { a.hold(); }).doc("Stops the axis: holds where it is, ends a jog, and zeroes a hand-driven output").ui("icon", "stop");
     // Hold buttons: true while pressed, renewed within the deadman, then
     // false. Refused like target writes.
     auto jog = [&a](int direction) {
