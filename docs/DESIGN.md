@@ -316,7 +316,7 @@ azimuth/                          label from the application
     kp, ki, kd, tolerance, maxSpeed, integralLimit, derivativeFilter, sensorTimeout
 ```
 
-`position`, `target` and `output` have `ui.widget "chart"`, which replaces Teleplot. TesserUI keeps their history, so the device stores nothing (TesserUI §7.7). `state` is bound to the axis's field directly, a byte the control task writes, since TesserAPI has no enum from a getter yet.
+`position`, `target` and `output` have `ui.widget "chart"`, which replaces Teleplot. TesserUI keeps their history, so the device stores nothing (TesserUI §7.7).
 
 ### 9.2 Sequencer *(later)*
 

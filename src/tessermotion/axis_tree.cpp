@@ -54,9 +54,7 @@ void describe(Object& o, Axis& a) {
         .ui("widget", "chart");
     o.value("error", [&a] { return a.error(); }).unit("°").watch();
     o.value("output", [&a] { return a.output(); }).watch().ui("widget", "chart");
-    // Bound directly: one byte the control task writes. TesserAPI has no
-    // enum from a getter yet.
-    o.value("state", a.stateRef(), {"disabled", "starting", "holding", "moving", "sensorFault"}).readOnly().watch();
+    o.value("state", [&a] { return a.state(); }, {"disabled", "starting", "holding", "moving", "sensorFault"}).watch();
     o.value("enabled", [&a] { return a.enabled(); }, [&a](bool on) { a.enable(on); });
     o.action("stop", [&a] { a.hold(); }).doc("Holds where the axis is").ui("icon", "stop");
 

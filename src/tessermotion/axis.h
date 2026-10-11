@@ -89,10 +89,6 @@ public:
     DcMotor& motor() { return motor_; }
     AngleSensor& sensor() { return sensor_; }
 
-    // For the tree, which binds enums to variables: a byte the control task
-    // writes, read without Motion's lock.
-    AxisState& stateRef() { return state_; }
-
     // Part
     void begin() override;
     void sense(uint64_t nowUs) override;
