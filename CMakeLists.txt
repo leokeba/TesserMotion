@@ -92,24 +92,37 @@ target_compile_options(tessermotion_core PRIVATE ${TESSERMOTION_WARNINGS})
 # The fakes and the simulated plant (test/fake_hw.*, test/plant.*), for the
 # host tests of TesserMotion and of applications built on it: link
 # tessermotion_testing, include "fake_hw.h" and "plant.h".
-add_library(tessermotion_testing test/fake_hw.cpp test/plant.cpp)
+#
+# fake_hw.cpp defines the platform hooks tessermotion_core calls (platform.h),
+# so its objects go into each executable rather than into the archive: GNU ld
+# scans an archive once, and libtessermotion_testing.a comes before
+# libtessermotion_core.a on the link line.
+add_library(tessermotion_fake_hw OBJECT test/fake_hw.cpp)
+target_include_directories(tessermotion_fake_hw PUBLIC test)
+target_link_libraries(tessermotion_fake_hw PUBLIC tessermotion_core)
+add_library(tessermotion_testing test/plant.cpp)
+target_sources(tessermotion_testing INTERFACE $<TARGET_OBJECTS:tessermotion_fake_hw>)
 target_include_directories(tessermotion_testing PUBLIC test)
 target_link_libraries(tessermotion_testing PUBLIC tessermotion_core)
-set_target_properties(tessermotion_testing PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
-target_compile_options(tessermotion_testing PRIVATE ${TESSERMOTION_WARNINGS})
+foreach(t tessermotion_fake_hw tessermotion_testing)
+    set_target_properties(${t} PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    target_compile_options(${t} PRIVATE ${TESSERMOTION_WARNINGS})
+endforeach()
 
 if(TESSERMOTION_BUILD_TESTS)
     enable_testing()
     add_executable(tessermotion_tests test/test_main.cpp)
     add_executable(tessermotion_fixtures test/fixtures_main.cpp)
-    foreach(t tessermotion_tests tessermotion_fixtures)
+    add_executable(tessermotion_link_check test/link_check_main.cpp)
+    foreach(t tessermotion_tests tessermotion_fixtures tessermotion_link_check)
         target_link_libraries(${t} PRIVATE tessermotion_testing)
         set_target_properties(${t} PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
         target_compile_options(${t} PRIVATE -Wall -Wextra -Werror -fno-exceptions -fno-rtti)
     endforeach()
     if(TESSERMOTION_SANITIZE)
         # tesser_core too, so the whole binary is instrumented alike.
-        foreach(t tesser_core tessermotion_core tessermotion_testing tessermotion_tests tessermotion_fixtures)
+        foreach(t tesser_core tessermotion_core tessermotion_fake_hw tessermotion_testing tessermotion_tests
+                  tessermotion_fixtures tessermotion_link_check)
             target_compile_options(${t} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer -g)
             target_link_options(${t} PRIVATE -fsanitize=address,undefined)
         endforeach()
@@ -118,4 +131,5 @@ if(TESSERMOTION_BUILD_TESTS)
     # Checks that the generator runs cleanly; the committed fixtures are
     # regenerated with `./build/tessermotion_fixtures fixtures`.
     add_test(NAME tessermotion_fixtures COMMAND tessermotion_fixtures ${CMAKE_CURRENT_BINARY_DIR}/fixtures)
+    add_test(NAME tessermotion_link_check COMMAND tessermotion_link_check)
 endif()
