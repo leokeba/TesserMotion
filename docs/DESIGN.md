@@ -1,6 +1,6 @@
 # TesserMotion design
 
-Status: phases 1 and 2 implemented (2026-10-11): the platform layer, `DcMotor`/`Tb6612Channel`, `Mt6701`, `Axis`, `Motion` and their trees, host-tested against a simulated plant, and commissioned on the heliostat's two axes (through tiny-heliostat). Phase 4's sensors (`Adxl345` with `Tilt`, `NmeaGps`) implemented and host-tested (2026-10-16), not yet run on hardware. This is the specification the code follows; when the two disagree, fix one of them. Sections marked *(later)* are committed to but not implemented yet. References to TesserAPI, TesserUI and TesserKIT point to their own DESIGN.md: [TesserAPI](https://github.com/leokeba/TesserAPI/blob/main/docs/DESIGN.md), [TesserUI](https://github.com/leokeba/TesserUI/blob/main/docs/DESIGN.md), [TesserKIT](https://github.com/leokeba/TesserKIT/blob/main/docs/DESIGN.md).
+Status: phases 1 and 2 implemented (2026-10-11): the platform layer, `DcMotor`/`Tb6612Channel`, `Mt6701`, `Axis`, `Motion` and their trees, host-tested against a simulated plant, and commissioned on the heliostat's two axes (through tiny-heliostat). Phase 4's sensors (`Adxl345` with `Tilt`, `NmeaGps`) implemented, host-tested, and run on the second heliostat (2026-10-16, through tiny-heliostat): tilt, GPS fix and the clock set from GPS. This is the specification the code follows; when the two disagree, fix one of them. Sections marked *(later)* are committed to but not implemented yet. References to TesserAPI, TesserUI and TesserKIT point to their own DESIGN.md: [TesserAPI](https://github.com/leokeba/TesserAPI/blob/main/docs/DESIGN.md), [TesserUI](https://github.com/leokeba/TesserUI/blob/main/docs/DESIGN.md), [TesserKIT](https://github.com/leokeba/TesserKIT/blob/main/docs/DESIGN.md).
 
 ## 1. Goals
 
@@ -262,7 +262,7 @@ Tilt tilt(accel);      // the Part: motion.add(tilt); api.mount("tilt", tilt);
 - **`Tilt`** is the Part. It reads the accelerometer every `every` ticks (default 5, so 10 Hz at 50 Hz) in `sense()`, and averages the last `samples` readings (default 8, up to 32). It reports `x`, `y`, `z`, then `pitch` = atan2(−x, √(y² + z²)) and `roll` = atan2(y, z) in degrees, and `present`.
 - **Absent sensors:** a sensor that fails `begin()`, or 3 reads in a row, is absent: it isn't read, and `begin()` is tried again every 2 s, starting a new average. So an accelerometer missing from a bus it shares with an encoder costs one NACK every 2 s and never resets the bus.
 - **`average(n, fn)`** *(later)*: a deferred action that collects n fresh readings and replies with their mean, for calibration routines (the heliostat's `AccelCalibService` samples it this way). Not built until one needs it.
-- Bias and scale calibration of the sensor itself *(later)*. The heliostat's joint solver over encoder offsets and mount misalignment stays in the heliostat.
+- Bias and scale calibration of the sensor itself *(later)*. It will be needed: the second heliostat's ADXL345 reads |g| ≈ 8.5 m/s², not 9.81. The heliostat's joint solver over encoder offsets and mount misalignment stays in the heliostat.
 
 ### 6.2 GPS
 
@@ -461,5 +461,5 @@ TesserMotion/
 | 1 | Packaging, platform interfaces and fakes, the plant model, CI-ready host build | An empty `Motion` ticks on the host and builds for ESP32, C3, S3 on ESP-IDF and Arduino. Done, without CI (no GitHub repository yet); the ESP-IDF build was checked on ESP32 and S3 (no RISC-V toolchain here), Arduino on all three. |
 | 2 | `DcMotor`/`Tb6612Channel`, `Mt6701`, `Axis`, `Motion`, their trees; jog with a deadman; autotune when an application asks | §11's axis tests pass (done); the heliostat's axes hold targets from the web interface (done, commissioned with tiny-heliostat). Jog done; autotune not asked for yet. |
 | 3 | `Sequencer` | The heliostat's azimuth and elevation sequences run from `x-keyframes`. |
-| 4 | `Adxl345`, `NmeaGps` | Tilt and GPS fix reported on the heliostat; the clock set from GPS through TesserKIT. Built and host-tested; not yet run on hardware. |
+| 4 | `Adxl345`, `NmeaGps` | Tilt and GPS fix reported on the heliostat; the clock set from GPS through TesserKIT. Done on the second heliostat (2026-10-16): the MT6701 sharing its bus with the ADXL345 had no faults, GPS time reached TesserKIT's clock, ticks took at most 3.7 ms of 20. |
 | 5 | Handover | TesserKIT's phase 3 (helionext) uses TesserMotion; footprint measured (§10). |
