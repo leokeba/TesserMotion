@@ -1,6 +1,6 @@
 # TesserMotion design
 
-Status: phase 1 and the core of phase 2 implemented (2026-10-11): the platform layer, `DcMotor`/`Tb6612Channel`, `Mt6701`, `Axis`, `Motion` and their trees, host-tested against a simulated plant, and commissioned on the heliostat's two axes (through tiny-heliostat). This is the specification the code follows; when the two disagree, fix one of them. Sections marked *(later)* are committed to but not implemented yet. References to TesserAPI, TesserUI and TesserKIT point to their own DESIGN.md: [TesserAPI](https://github.com/leokeba/TesserAPI/blob/main/docs/DESIGN.md), [TesserUI](https://github.com/leokeba/TesserUI/blob/main/docs/DESIGN.md), [TesserKIT](https://github.com/leokeba/TesserKIT/blob/main/docs/DESIGN.md).
+Status: phases 1 and 2 implemented (2026-10-11): the platform layer, `DcMotor`/`Tb6612Channel`, `Mt6701`, `Axis`, `Motion` and their trees, host-tested against a simulated plant, and commissioned on the heliostat's two axes (through tiny-heliostat). Phase 4's sensors (`Adxl345` with `Tilt`, `NmeaGps`) implemented and host-tested (2026-10-16), not yet run on hardware. This is the specification the code follows; when the two disagree, fix one of them. Sections marked *(later)* are committed to but not implemented yet. References to TesserAPI, TesserUI and TesserKIT point to their own DESIGN.md: [TesserAPI](https://github.com/leokeba/TesserAPI/blob/main/docs/DESIGN.md), [TesserUI](https://github.com/leokeba/TesserUI/blob/main/docs/DESIGN.md), [TesserKIT](https://github.com/leokeba/TesserKIT/blob/main/docs/DESIGN.md).
 
 ## 1. Goals
 
@@ -39,7 +39,8 @@ TesserMotion is a library of motion control and sensing for ESP32 devices built 
                    ├─▶ Sequencer ──(tracks)──▶ Axis target, or a function
                    ├─▶ Axis ──▶ AngleSensor (Mt6701 on I2cBus)
                    │        └─▶ DcMotor (Tb6612Channel on Pwm + Gpio)
-                   └─▶ Accelerometer (Adxl345 on I2cBus), Gps (Nmea on Uart)
+                   ├─▶ Tilt ──▶ Accelerometer (Adxl345 on I2cBus, shareable with an Mt6701)
+                   └─▶ NmeaGps (Nmea on Uart)
 
  tesser::Api ◀── describe(Object&, Axis&), describe(Object&, Sequencer&), ...
 ```
@@ -49,7 +50,7 @@ TesserMotion is a library of motion control and sensing for ESP32 devices built 
 | Layer | Content | Depends on |
 |---|---|---|
 | Driver | `Tb6612Channel`, `Tb6612Standby`, `Mt6701`, `Adxl345`, `NmeaGps`: register maps, pin logic, scaling. | The platform interfaces (§3.3). |
-| Controller | `DcMotor` output mapping, `Axis` (with its PID), `RelayAutotune`, `Sequencer`, `Motion`. Pure logic; time comes in as an argument. | Drivers through their interfaces (`AngleSensor`, `DcMotor`, `Accelerometer`). |
+| Controller | `DcMotor` output mapping, `Axis` (with its PID), `RelayAutotune`, `Sequencer`, `Tilt`, `Motion`; the `Nmea` parser. Pure logic; time comes in as an argument. | Drivers through their interfaces (`AngleSensor`, `DcMotor`, `Accelerometer`). |
 | Tree | `describe()` free functions, found by argument-dependent lookup as TesserAPI's `mount()` expects (TesserAPI §4.3), in their own `*_tree.cpp` files. | TesserAPI. |
 
 Headers of the first two layers don't include TesserAPI, so a project can use an `Axis` without a tree. The package still lists TesserAPI as a dependency.
@@ -93,11 +94,12 @@ Narrow interfaces in `src/tessermotion/platform.h`, an ESP implementation in `sr
 | `Gpio` | `output(pin, level)`, `set(pin, level)` | `driver/gpio.h` |
 | `Pwm` | `attach(pin, frequencyHz) → channel`, `duty(channel, fraction 0..1)` | LEDC (§7.2) |
 | `I2c` | `begin()` (idempotent: every device on the bus calls it), `read(addr, reg, buf, len)`, `write(addr, reg, buf, len)`, `recover()` | `I2cBus`, on `driver/i2c_master.h` (§7.1) |
-| `Uart` *(later)* | `begin(rx, tx, baud)`, non-blocking `read(buf, max) → n` | `driver/uart.h` |
+| `Uart` | `begin()`, non-blocking `read(buf, max) → n` | `UartPort`, on `driver/uart.h` (§7.3) |
 | `Lock` | `lock()`, `unlock()`; recursive | a static FreeRTOS recursive mutex; `std::recursive_mutex` on the host |
 | `startPeriodic(task, periodUs, tick)`, `nowUs()` | free functions: the control task and the clock | `xTaskCreatePinnedToCore` with `vTaskDelayUntil`; `esp_timer_get_time()` |
 
 - **Defaults:** a TB6612 takes a `Gpio*` and a `Pwm*`, null by default, meaning the chip's (`defaultGpio()`, `defaultPwm()`). Tests pass fakes, or use the defaults, which the fakes provide on the host.
+- **`UartPort`** is a concrete class on ESP too: `UartPort uart({.rx, .tx, .baud, .port})`, 9600 baud and UART 1 by default.
 - **`I2cBus`** is a concrete class on ESP (`I2cBus bus({.sda, .scl, .port, .hz})`) that implements `I2c`. It can also wrap a bus handle the application already created (`I2cBus bus(existingHandle)`), so TesserMotion shares a bus with other code; Arduino's `Wire` gives its handle with `i2cBusHandle(num)`.
 
 ### 3.4 What each layer owns
@@ -239,7 +241,7 @@ targetSequence.onFrame([](const float* v, size_t n) {   // NaN: track empty
 - **Callbacks:** `onStart` and `onStop`, so an application switches its mode when a sequence starts from the interface or a timer.
 - **Start at a wall-clock time** is TesserKIT's Timers (`path` `/azimuth/sequence/start`), or NowTP's shared clock *(later)*.
 
-## 6. Sensors *(later)*
+## 6. Sensors
 
 ### 6.1 Accelerometer
 
@@ -251,16 +253,27 @@ public:
 };
 ```
 
-- **`Adxl345`** (I2C, address 0x53 or 0x1D): checks DEVID 0xE5, then sets 100 Hz (BW_RATE 0x0A), full resolution ±16 g (DATA_FORMAT 0x0B) and measure mode (POWER_CTL 0x08). It reads six bytes from 0x32, at 3.9 mg/LSB. These are the heliostat's settings.
-- **Sampling:** the accelerometer is read every `every` ticks (default 5, so 10 Hz at 50 Hz), averaged over the last `samples` readings (default 8, up to 32). It reports `x`, `y`, `z`, then `pitch` and `roll` in degrees computed from them, and `present`.
-- **`average(n, fn)`**: a deferred action that collects n fresh readings and replies with their mean. This is what calibration routines use (the heliostat's `AccelCalibService` samples it this way).
+```cpp
+Adxl345 accel(bus1);   // the azimuth Mt6701's bus
+Tilt tilt(accel);      // the Part: motion.add(tilt); api.mount("tilt", tilt);
+```
+
+- **`Adxl345`** (I2C, address 0x53 or 0x1D): checks DEVID 0xE5, then sets 100 Hz (BW_RATE 0x0A), full resolution ±16 g (DATA_FORMAT 0x0B) and measure mode (POWER_CTL 0x08). It reads six bytes from 0x32, at 3.9 mg/LSB. These are the heliostat's settings. Like the MT6701, it recovers the bus after 3 failed reads in a row; `begin()` never does.
+- **`Tilt`** is the Part. It reads the accelerometer every `every` ticks (default 5, so 10 Hz at 50 Hz) in `sense()`, and averages the last `samples` readings (default 8, up to 32). It reports `x`, `y`, `z`, then `pitch` = atan2(−x, √(y² + z²)) and `roll` = atan2(y, z) in degrees, and `present`.
+- **Absent sensors:** a sensor that fails `begin()`, or 3 reads in a row, is absent: it isn't read, and `begin()` is tried again every 2 s, starting a new average. So an accelerometer missing from a bus it shares with an encoder costs one NACK every 2 s and never resets the bus.
+- **`average(n, fn)`** *(later)*: a deferred action that collects n fresh readings and replies with their mean, for calibration routines (the heliostat's `AccelCalibService` samples it this way). Not built until one needs it.
 - Bias and scale calibration of the sensor itself *(later)*. The heliostat's joint solver over encoder offsets and mount misalignment stays in the heliostat.
 
 ### 6.2 GPS
 
-- **`NmeaGps`** on a `Uart` (default 9600 baud, the heliostat's NEO module). It parses `RMC` and `GGA` sentences, any talker (`GP`, `GN`...), with checksums verified. Lines that fail are counted and dropped. The parser is its own host-tested class (`Nmea`), replacing TinyGPSPlus and TimeLib.
-- **Reports:** `fix` (`none`, `gps`, `dgps`, ... GGA's quality), `satellites`, `hdop`, `latitude`, `longitude` (degrees), `altitude` (m), `utc` (ISO 8601), and `age` (ms since the last valid fix).
-- **Time:** the latest valid RMC with a date is kept, and `takeTime(int64_t& epochMs)` hands it over once. An application polls it outside the control task: on TesserKIT, from `dev.onTick()`, passing it to `clock.external()` (TesserKIT §5.3). A callback from the control task couldn't do that: `external()` takes the API lock, the reverse of the lock order (§3.5).
+```cpp
+UartPort gpsUart({.rx = 25, .tx = 33});   // UART 1, 9600 baud
+NmeaGps gps(gpsUart);                     // a Part: motion.add(gps); api.mount("gps", gps);
+```
+
+- **`NmeaGps`** on a `Uart` (default 9600 baud, the heliostat's NEO module). It parses `RMC` and `GGA` sentences, any talker (`GP`, `GN`...), with checksums required and verified. Lines that fail (checksum, malformed fields, longer than 100 characters, cut short by the next `$`) are counted and dropped; other sentences are ignored. The parser is its own host-tested class (`Nmea`), replacing TinyGPSPlus and TimeLib.
+- **Reports:** `fix` (`none`, `gps`, `dgps`, `pps`, `rtk`, `floatRtk`, `estimated`, `manual`, `simulation`: GGA's quality), `satellites`, `hdop`, `latitude`, `longitude` (degrees, `double`), `altitude` (m), `utc` (ISO 8601, from the latest valid RMC), and `age` (ms since the last position, −1 before one). Positions come from a GGA with a fix or a valid RMC, and are kept when the fix is lost. Without a GGA for 3 s, the fix is `none` and `satellites` 0. `gps.fix()` gives the same as a struct, from any task.
+- **Time:** the latest valid RMC (status A) with a date is kept, and `takeTime(int64_t& epochMs)` hands it over once, advanced by the time since the sentence came. A void RMC's date (the receiver's clock without a fix) is never used. An application polls it outside the control task: on TesserKIT, from `dev.onTick()`, passing it to `clock.external()` (TesserKIT §5.3). A callback from the control task couldn't do that: `external()` takes the API lock, the reverse of the lock order (§3.5).
 - The UART is read every tick without blocking. Parsing happens in the control task, which is cheap at 9600 baud.
 - UBX configuration (rate, constellations) and PPS *(later)*.
 
@@ -279,9 +292,9 @@ ESP-IDF refuses to link the legacy I2C driver (`driver/i2c.h`) and the new one (
 - `Pwm` allocates LEDC timers and channels from the top of the range downwards (timer 3, channels 7, 6, ...). Arduino's `analogWrite` and `ledcAttach` allocate from the bottom, so the two rarely collide. Channels can be given explicitly.
 - Two motors at the same frequency share a timer.
 
-### 7.3 UART *(later)*
+### 7.3 UART
 
-`Uart` installs `uart_driver_install` with a 256-byte receive buffer on the port given (default UART 1), with no event queue.
+`UartPort` installs `uart_driver_install` with a 256-byte receive buffer on the port given (default UART 1), with no event queue. It refuses a port whose driver is already installed (Arduino's `Serial1`, if begun).
 
 ## 8. Persistence
 
@@ -342,24 +355,26 @@ sequence/                         ui.widget x-keyframes (ui.script set by the ap
 
 A track bound to an axis takes the axis's range for `value`, so the element bounds its curve. A track bound to a function has the range given by `range(i, lo, hi)`.
 
-### 9.3 Sensors *(later)*
+### 9.3 Sensors
 
 ```
-tilt/                             Adxl345
+tilt/                             Tilt
   x, y, z       number (w)        m/s², read-only
   pitch, roll   number (w)        °, read-only
-  present       boolean
+  present       boolean (w)
   samples       integer (p)       1..32
-  average       action            deferred; argument n (1..256), replies {x, y, z}
+  average       action            (later) deferred; argument n (1..256), replies {x, y, z}
 
 gps/                              NmeaGps
   fix           enum   (w)
   satellites    integer (w)
   hdop, latitude, longitude, altitude   number (w)
-  utc           string
-  age           integer (w)       ms
-  errors        integer           checksum and parse failures
+  utc           string (w)
+  age           integer (w)       ms; -1 before a position
+  errors        integer (w)       checksum and parse failures
 ```
+
+Everything but `samples` changes without a write, so it is watched (§9.1's rule).
 
 ### 9.4 Motion
 
@@ -402,9 +417,9 @@ Measured as in TesserAPI §15 and TesserKIT §11: an example built with and with
    - **Autotune** *(later)* finds the plant's Ku and Tu within 20 % of their analytic values, and the gains it writes hold a target.
    - **Motor:** output mapping (clamping, NaN, shape), invert, the TB6612 truth table on fake GPIOs, standby held low when the PWM can't attach.
    - **Sequencer:** before the first frame, between frames, after the end, looping, zero duration, empty tracks (NaN), wrap, unsorted writes, refusal of axis target writes while running.
-   - **Drivers:** MT6701 register traffic on the fake bus, 0° as a valid reading, recovery after 3 failures; later ADXL345 traffic and NMEA sentences (real captures from the heliostat's module in `test/nmea/`, bad checksums, partial lines, no fix).
-   - **Trees:** requests through TesserAPI's handler (refusals, claims, settings, what is persisted), and golden schemas in `fixtures/*.json` (axis and motion now; sequencer, tilt, gps later) written by `tessermotion_fixtures`, as in TesserKIT §12, to be rendered in TesserUI's golden-model tests. They replace TesserUI's hand-written `motors` fixture (a gap report to TesserUI's agent).
-2. **On target:** `examples/idf/axis` (one axis on the heliostat's azimuth pins, on TesserKIT for Wi-Fi and the interface; later a sequencer and the accelerometer), driven by `test/e2e_motion.py` over HTTP and WebSocket: enable, move to targets and read back positions within tolerance, slew timing, limits, a sequence run, a sensor fault (unplugging is manual; the script asks), autotune, persistence across a restart. Motors move: see AGENTS.md before running it.
+   - **Drivers:** MT6701 register traffic on the fake bus, 0° as a valid reading, recovery after 3 failures; ADXL345 register traffic and scaling, an absent ADXL345 sharing a bus with an MT6701 (never read, never recovering the bus), `Tilt`'s averaging, loss and return; NMEA sentences (any talker, both hemispheres, bad checksums, missing checksums, malformed fields, partial and over-long lines, no fix, void RMC), `NmeaGps`'s fix, staleness and `takeTime()`. The sentences are standard examples; real captures from the heliostat's module go in `test/nmea/` once taken.
+   - **Trees:** requests through TesserAPI's handler (refusals, claims, settings, what is persisted), and golden schemas in `fixtures/*.json` (axis, motion, tilt, gps now; sequencer later) written by `tessermotion_fixtures`, as in TesserKIT §12, to be rendered in TesserUI's golden-model tests. They replace TesserUI's hand-written `motors` fixture (a gap report to TesserUI's agent).
+2. **On target:** `examples/idf/axis` (one axis on the heliostat's azimuth pins, the ADXL345 on its bus and the GPS, on TesserKIT for Wi-Fi and the interface; later a sequencer), driven by `test/e2e_motion.py` over HTTP and WebSocket: enable, move to targets and read back positions within tolerance, slew timing, limits, a sequence run, a sensor fault (unplugging is manual; the script asks), autotune, persistence across a restart. Motors move: see AGENTS.md before running it.
 3. **CI:** host tests, ESP-IDF builds (5.2, 5.4, 5.5, latest × ESP32, ESP32-C3, ESP32-S3), Arduino-ESP32 3.x builds of the examples.
 
 ## 12. Packaging
@@ -446,5 +461,5 @@ TesserMotion/
 | 1 | Packaging, platform interfaces and fakes, the plant model, CI-ready host build | An empty `Motion` ticks on the host and builds for ESP32, C3, S3 on ESP-IDF and Arduino. Done, without CI (no GitHub repository yet); the ESP-IDF build was checked on ESP32 and S3 (no RISC-V toolchain here), Arduino on all three. |
 | 2 | `DcMotor`/`Tb6612Channel`, `Mt6701`, `Axis`, `Motion`, their trees; jog with a deadman; autotune when an application asks | §11's axis tests pass (done); the heliostat's axes hold targets from the web interface (done, commissioned with tiny-heliostat). Jog done; autotune not asked for yet. |
 | 3 | `Sequencer` | The heliostat's azimuth and elevation sequences run from `x-keyframes`. |
-| 4 | `Adxl345`, `NmeaGps` | Tilt and GPS fix reported on the heliostat; the clock set from GPS through TesserKIT. |
+| 4 | `Adxl345`, `NmeaGps` | Tilt and GPS fix reported on the heliostat; the clock set from GPS through TesserKIT. Built and host-tested; not yet run on hardware. |
 | 5 | Handover | TesserKIT's phase 3 (helionext) uses TesserMotion; footprint measured (§10). |

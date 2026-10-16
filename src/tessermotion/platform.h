@@ -41,6 +41,15 @@ public:
     virtual void recover() = 0;
 };
 
+class Uart {
+public:
+    virtual ~Uart() = default;
+    // Sets the port up; may run again.
+    virtual bool begin() = 0;
+    // Up to `max` received bytes, without waiting: 0 when none came.
+    virtual size_t read(uint8_t* buf, size_t max) = 0;
+};
+
 // The chip's GPIO and LEDC, used by drivers given none (tests give fakes).
 Gpio& defaultGpio();
 Pwm& defaultPwm();

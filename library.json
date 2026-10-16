@@ -1,8 +1,8 @@
 {
   "name": "TesserMotion",
   "version": "0.1.0",
-  "description": "Motion control and sensing for ESP32 on TesserAPI: DC motors on a TB6612, MT6701 encoders, closed-loop axes with limits and slew, in a fixed-rate control task. Every part describes itself into a TesserAPI tree, drawn by TesserUI without UI code. Arduino and ESP-IDF.",
-  "keywords": ["motor", "servo", "pid", "encoder", "tb6612", "mt6701", "esp32", "tesserapi"],
+  "description": "Motion control and sensing for ESP32 on TesserAPI: DC motors on a TB6612, MT6701 encoders, closed-loop axes with limits and slew, an ADXL345 and an NMEA GPS, in a fixed-rate control task. Every part describes itself into a TesserAPI tree, drawn by TesserUI without UI code. Arduino and ESP-IDF.",
+  "keywords": ["motor", "servo", "pid", "encoder", "tb6612", "mt6701", "adxl345", "gps", "nmea", "esp32", "tesserapi"],
   "repository": {
     "type": "git",
     "url": "https://github.com/leokeba/TesserMotion.git"

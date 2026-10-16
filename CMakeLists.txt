@@ -3,10 +3,16 @@ set(TESSERMOTION_CORE_SRCS
     src/tessermotion/dc_motor.cpp
     src/tessermotion/tb6612.cpp
     src/tessermotion/mt6701.cpp
+    src/tessermotion/adxl345.cpp
+    src/tessermotion/nmea.cpp
     src/tessermotion/axis.cpp
     src/tessermotion/motion.cpp
+    src/tessermotion/tilt.cpp
+    src/tessermotion/nmea_gps.cpp
     src/tessermotion/axis_tree.cpp
-    src/tessermotion/motion_tree.cpp)
+    src/tessermotion/motion_tree.cpp
+    src/tessermotion/tilt_tree.cpp
+    src/tessermotion/gps_tree.cpp)
 
 if(ESP_PLATFORM)
     # TesserAPI is a hard dependency. Its component name depends on how it
@@ -29,7 +35,7 @@ if(ESP_PLATFORM)
     # The drivers left "driver" in ESP-IDF 5.3.
     if(IDF_VERSION_MAJOR GREATER 5 OR (IDF_VERSION_MAJOR EQUAL 5 AND IDF_VERSION_MINOR GREATER_EQUAL 3))
         set(TESSERMOTION_I2C_REQ esp_driver_i2c)
-        set(TESSERMOTION_DRIVER_REQS esp_driver_gpio esp_driver_ledc)
+        set(TESSERMOTION_DRIVER_REQS esp_driver_gpio esp_driver_ledc esp_driver_uart)
     else()
         set(TESSERMOTION_I2C_REQ driver)
         set(TESSERMOTION_DRIVER_REQS "")
@@ -40,6 +46,7 @@ if(ESP_PLATFORM)
              src/tessermotion/platform/esp/pwm_esp.cpp
              src/tessermotion/platform/esp/i2c_bus.cpp
              src/tessermotion/platform/esp/task_esp.cpp
+             src/tessermotion/platform/esp/uart_port.cpp
         INCLUDE_DIRS "src"
         REQUIRES ${TESSERMOTION_I2C_REQ}  # i2c_bus.h includes driver/i2c_master.h
         PRIV_REQUIRES ${TESSERMOTION_DRIVER_REQS} esp_timer log)

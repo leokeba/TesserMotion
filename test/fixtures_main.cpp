@@ -42,9 +42,21 @@ int main(int argc, char** argv) {
     tessermotion::Axis axis(plant, plant);
     tessermotion::Motion motion;
     motion.add(axis);
+    fake::I2c bus;
+    tessermotion::Adxl345 accel(bus);
+    tessermotion::Tilt tilt(accel);
+    fake::Uart uart;
+    tessermotion::NmeaGps gps(uart);
+    motion.add(tilt);
+    motion.add(gps);
     tesser::Api api;
     api.mount("azimuth", axis).label("Azimuth");
     api.mount("motion", motion);
+    api.mount("tilt", tilt).label("Tilt");
+    api.mount("gps", gps).label("GPS");
     if (tesser::declarationErrors() != 0) return 1;
-    return write(api, "/azimuth", dir, "axis.json") && write(api, "/motion", dir, "motion.json") ? 0 : 1;
+    return write(api, "/azimuth", dir, "axis.json") && write(api, "/motion", dir, "motion.json") &&
+                   write(api, "/tilt", dir, "tilt.json") && write(api, "/gps", dir, "gps.json")
+               ? 0
+               : 1;
 }

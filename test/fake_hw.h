@@ -1,5 +1,5 @@
 // The platform in memory (docs/DESIGN.md section 3.3), for host tests:
-// GPIO, PWM and I2C fakes, a settable clock, and a control task that tests
+// GPIO, PWM, I2C and UART fakes, a settable clock, and a control task that tests
 // run by hand. Part of tessermotion_testing, for applications' tests too.
 #pragma once
 
@@ -7,6 +7,7 @@
 
 #include <functional>
 #include <map>
+#include <string>
 #include <vector>
 
 #include "tessermotion/platform.h"
@@ -71,6 +72,22 @@ struct I2c : tessermotion::I2c {
         recovers++;
         stuck = false;
     }
+};
+
+// Bytes the test sends come out of read(), at most `chunk` per call.
+struct Uart : tessermotion::Uart {
+    std::string rx;
+    size_t pos = 0;
+    size_t chunk = 64;
+    bool ok = true;  // what begin() returns
+    uint32_t begins = 0, reads = 0;
+
+    bool begin() override {
+        begins++;
+        return ok;
+    }
+    size_t read(uint8_t* buf, size_t max) override;
+    void send(const std::string& bytes) { rx += bytes; }
 };
 
 // What defaultGpio() and defaultPwm() return on the host.

@@ -1,5 +1,7 @@
 #include "fake_hw.h"
 
+#include <string.h>
+
 #include <utility>
 
 namespace fake {
@@ -43,6 +45,16 @@ bool I2c::write(uint8_t addr, uint8_t reg, const uint8_t* buf, size_t len) {
     if (dev == regs.end()) return false;
     for (size_t i = 0; i < len; i++) dev->second[static_cast<uint8_t>(reg + i)] = buf[i];
     return true;
+}
+
+size_t Uart::read(uint8_t* buf, size_t max) {
+    reads++;
+    size_t n = rx.size() - pos;
+    if (n > max) n = max;
+    if (n > chunk) n = chunk;
+    memcpy(buf, rx.data() + pos, n);
+    pos += n;
+    return n;
 }
 
 void Task::tick(uint32_t durationUs) {
