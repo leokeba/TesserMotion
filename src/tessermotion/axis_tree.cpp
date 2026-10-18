@@ -42,6 +42,8 @@ Check claimed(Axis& a) {
 
 constexpr Check kNotRunning{Status::NotAllowed, "the axis isn't running"};
 
+constexpr size_t kMaxCalPoints = 64;
+
 }  // namespace
 
 void describe(Object& o, Axis& a) {
@@ -110,6 +112,69 @@ void describe(Object& o, Axis& a) {
     auto& sc = sensor.object("config").persist().label("Sensor settings").ui("collapsed");
     setting(sc, "invert", a, a.sensorConfig.invert);
     setting(sc, "offset", a, a.sensorConfig.offset).range(-360, 360).unit("°").step(0.01);
+
+    // The calibration is the tree's, under the API lock; the coefficients
+    // are written by fit and clear under the axis's lock, and only loading
+    // writes them without it.
+    Axis::Calibration& cal = a.calibration;
+    auto& corr = sensor.object("correction").label("Correction").ui("collapsed");
+    corr.value("harmonics", cal.harmonics).range(0, AngleCorrection::kMaxHarmonics).persist().doc("0: as many as the points support, up to 3");
+    auto& points = corr.list("points", cal.points,
+                             [](Object& p, CalPoint& point) {
+                                 p.value("raw", point.raw).range(0, 360).unit("°").step(0.01);
+                                 p.value("reference", point.reference).range(0, 360).unit("°").step(0.01).doc("The position it should show");
+                                 p.value("weight", point.weight).range(0, 100).step(0.1).doc("0 leaves the point out");
+                             })
+                       .maxSize(kMaxCalPoints)
+                       .persist();
+    auto& cosines = corr.array("cos", a.correction.cos).readOnly().persist();
+    auto& sines = corr.array("sin", a.correction.sin).readOnly().persist();
+    corr.action("record",
+                [&a, &cal, &points](float reference) -> Check {
+                    CalPoint p;
+                    if (cal.points.size() >= kMaxCalPoints) return Check::fail(Status::NotAllowed, "the list of points is full");
+                    if (!a.calibrationPoint(reference, p)) return Check::fail(Status::NotAllowed, "no reading yet");
+                    cal.points.push_back(p);
+                    points.changed();
+                    return Check::ok();
+                })
+        .doc("Adds a point at the current reading, which should show the position given; record one several times to average");
+    corr.action("fit",
+                [&a, &cal, &cosines, &sines]() -> Check {
+                    if (const char* error = a.fitCorrection(cal.points.data(), cal.points.size(), cal.harmonics)) {
+                        return Check::fail(Status::InvalidValue, error);
+                    }
+                    cosines.changed();
+                    sines.changed();
+                    return Check::ok();
+                })
+        .doc("Fits the correction to the points and applies it: the position changes, the motor doesn't move");
+    corr.action("clear",
+                [&a, &cosines, &sines] {
+                    {
+                        Guard g(a.lock());
+                        a.correction.clear();
+                    }
+                    cosines.changed();
+                    sines.changed();
+                })
+        .doc("Removes the correction; the points stay");
+    // Computed on each read; watched, since the points and the correction
+    // change them.
+    auto residual = [&a, &cal](float AngleCorrection::Residuals::*field) {
+        return [&a, &cal, field] { return a.correctionResiduals(cal.points.data(), cal.points.size()).*field; };
+    };
+    auto& res = corr.object("residuals").doc("Of the points, with the correction as it is");
+    res.value("points", [&a, &cal] { return static_cast<uint32_t>(a.correctionResiduals(cal.points.data(), cal.points.size()).points); })
+        .watch();
+    res.value("zero", residual(&AngleCorrection::Residuals::zero))
+        .unit("°")
+        .step(0.01)
+        .watch()
+        .doc("The constant left: add it to the offset if the references were absolute");
+    res.value("rms", residual(&AngleCorrection::Residuals::rms)).unit("°").step(0.001).watch();
+    res.value("max", residual(&AngleCorrection::Residuals::max)).unit("°").step(0.001).watch();
+    res.value("coverage", residual(&AngleCorrection::Residuals::coverage)).unit("°").step(0.1).watch().doc("The arc the points span");
 
     auto& limits = o.object("limits").persist().doc("In raw sensor angles: the axis stays on the arc from begin to end, increasing");
     setting(limits, "enabled", a, a.limits.enabled);

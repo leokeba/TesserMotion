@@ -97,6 +97,11 @@ float Axis::raw() {
     return raw_;
 }
 
+bool Axis::hasReading() {
+    Guard g(lock());
+    return hasReading_;
+}
+
 uint32_t Axis::faults() {
     Guard g(lock());
     return faults_;
@@ -105,6 +110,44 @@ uint32_t Axis::faults() {
 AxisState Axis::state() {
     Guard g(lock());
     return state_;
+}
+
+bool Axis::calibrationPoint(float reference, CalPoint& point) {
+    Guard g(lock());
+    if (!hasReading_) return false;
+    point = {raw_, wrap360(reference), 1};
+    return true;
+}
+
+std::vector<CalPoint> Axis::toSensor(const CalPoint* points, size_t n) {
+    Guard g(lock());
+    std::vector<CalPoint> out(points, points + n);
+    for (CalPoint& p : out) p.reference = toSensor(p.reference);
+    return out;
+}
+
+const char* Axis::fitCorrection(const CalPoint* points, size_t n, int harmonics) {
+    // Fitted outside the lock, so the control task doesn't wait for it.
+    std::vector<CalPoint> sensorPoints = toSensor(points, n);
+    AngleCorrection fitted;
+    if (const char* error = fitted.fit(sensorPoints.data(), n, harmonics)) return error;
+    Guard g(lock());
+    correction = fitted;
+    return nullptr;
+}
+
+AngleCorrection::Residuals Axis::correctionResiduals(const CalPoint* points, size_t n) {
+    std::vector<CalPoint> sensorPoints = toSensor(points, n);
+    AngleCorrection c;
+    bool invert;
+    {
+        Guard g(lock());
+        c = correction;
+        invert = sensorConfig.invert;
+    }
+    AngleCorrection::Residuals r = c.residuals(sensorPoints.data(), n);
+    if (invert) r.zero = -r.zero;
+    return r;
 }
 
 void Axis::begin() {
@@ -210,9 +253,14 @@ void Axis::reset() {
     lastUs_ = 0;
 }
 
-float Axis::toOutput(float raw) const { return wrap360((sensorConfig.invert ? -raw : raw) + sensorConfig.offset); }
+float Axis::toOutput(float raw) const {
+    float r = correction.apply(raw);
+    return wrap360((sensorConfig.invert ? -r : r) + sensorConfig.offset);
+}
 
-float Axis::toRaw(float out) const {
+float Axis::toRaw(float out) const { return correction.remove(toSensor(out)); }
+
+float Axis::toSensor(float out) const {
     float r = out - sensorConfig.offset;
     return wrap360(sensorConfig.invert ? -r : r);
 }

@@ -4,6 +4,7 @@
 
 #include "tessermotion/accelerometer.h"
 #include "tessermotion/adxl345.h"
+#include "tessermotion/angle_correction.h"
 #include "tessermotion/angle_sensor.h"
 #include "tessermotion/axis.h"
 #include "tessermotion/dc_motor.h"

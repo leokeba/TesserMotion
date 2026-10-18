@@ -1,6 +1,6 @@
 # TesserMotion design
 
-Status: phases 1 and 2 implemented (2026-10-11): the platform layer, `DcMotor`/`Tb6612Channel`, `Mt6701`, `Axis`, `Motion` and their trees, host-tested against a simulated plant, and commissioned on the heliostat's two axes (through tiny-heliostat). Phase 4's sensors (`Adxl345` with `Tilt`, `NmeaGps`) implemented, host-tested, and run on the second heliostat (2026-10-16, through tiny-heliostat): tilt, GPS fix and the clock set from GPS. This is the specification the code follows; when the two disagree, fix one of them. Sections marked *(later)* are committed to but not implemented yet. References to TesserAPI, TesserUI and TesserKIT point to their own DESIGN.md: [TesserAPI](https://github.com/leokeba/TesserAPI/blob/main/docs/DESIGN.md), [TesserUI](https://github.com/leokeba/TesserUI/blob/main/docs/DESIGN.md), [TesserKIT](https://github.com/leokeba/TesserKIT/blob/main/docs/DESIGN.md).
+Status: phases 1 and 2 implemented (2026-10-11): the platform layer, `DcMotor`/`Tb6612Channel`, `Mt6701`, `Axis`, `Motion` and their trees, host-tested against a simulated plant, and commissioned on the heliostat's two axes (through tiny-heliostat). Phase 4's sensors (`Adxl345` with `Tilt`, `NmeaGps`) implemented, host-tested, and run on the second heliostat (2026-10-16, through tiny-heliostat): tilt, GPS fix and the clock set from GPS. The angle sensor's correction (§4.2) implemented and host-tested (2026-10-18), not yet run on hardware. This is the specification the code follows; when the two disagree, fix one of them. Sections marked *(later)* are committed to but not implemented yet. References to TesserAPI, TesserUI and TesserKIT point to their own DESIGN.md: [TesserAPI](https://github.com/leokeba/TesserAPI/blob/main/docs/DESIGN.md), [TesserUI](https://github.com/leokeba/TesserUI/blob/main/docs/DESIGN.md), [TesserKIT](https://github.com/leokeba/TesserKIT/blob/main/docs/DESIGN.md).
 
 ## 1. Goals
 
@@ -157,13 +157,21 @@ public:
 
 `Mt6701` reads an MT6701 magnetic encoder over I2C (address 0x06): a 14-bit angle in registers 0x03 (bits 13–6) and 0x04 (bits 7–2 hold bits 5–0). The heliostat reads three bytes from 0x02 and uses the last two; TesserMotion reads two from 0x03, which should give the same values. Check that on hardware, and go back to the three-byte read if it doesn't. Each MT6701 has the same fixed address, so two encoders need two buses (the heliostat uses I2C 0 and 1).
 
+**Correction.** An angle sensor's error repeats every turn: an off-centre or tilted magnet, an uneven field. `AngleCorrection` models it as a short Fourier series in the raw angle, corrected = raw + c(raw), with c(θ) = Σ a_k·cos kθ + b_k·sin kθ for k = 1..K (K ≤ 6). Eccentricity is mostly k = 1, with some k = 2; tilt and the magnet add k = 2 and 3.
+
+- **Points** are pairs: the raw reading, and a reference, what a perfect sensor would have read. Where they come from doesn't matter: a protractor or a jig with a DC motor, steps counted with a stepper, the accelerometer, the sun. Each has a weight (1/σ², so rough and accurate references mix); weight 0 leaves a point out, and a point recorded several times counts as their average.
+- **The fit** is weighted least squares for a₀ and the 2K coefficients, with a ridge on the coefficients (10⁻³ per point, with the weights scaled to average 1). The ridge doesn't change the result over a full turn of points, but it keeps the correction small away from the points on a short arc: over 90° (an elevation axis), 10 points cut a 0.28° error to 0.015° there, while the correction stays below 0.6° on the rest of the circle. K = 0 fits as many as the points support (2K + 1 ≤ points), up to 3. A fit fails, keeping the correction as it was, without enough points for the harmonics asked, with a point that isn't a number, or when the result would be too steep to invert (|c′| ≥ 0.5, references far off: 2° of first harmonic is 0.035).
+- **a₀,** the constant between the references and the readings, is fitted but not applied: the sensor's `offset` stays the zero, so references may have any zero (a stepper's count from wherever it started). On an arc short of a turn, part of the error can't be told from a constant, and goes into a₀ too. The residuals report it, as what to add to the offset when the references were absolute.
+- **Residuals,** computed on each read from the points and the correction as it is (so also before any fit, uncorrected): the points used, `zero` (a₀), the RMS and the maximum of what is left once the zero is taken out, and the arc the points cover.
+- **Applying** is in the axis, between the raw and the output frames (§4.3). The control loop never evaluates it: a reading is corrected only to show it, and a target is converted once, by the fixed-point steps raw ← corrected − c(raw).
+
 **Bus faults:** after 3 failed reads in a row (a NACK, a bus error or a 20 ms timeout, §7.1), the sensor calls `bus.recover()` and counts again from zero, so a dead bus is recovered every third tick at most. The axis sees `read()` return false and counts it (§4.3, §9.1). The heliostat's separate 100 ms cooldown and slow-transfer trigger are gone: the count spaces recoveries, and a slow transfer is a timeout.
 
 ### 4.3 Axis
 
 An `Axis` is a closed-loop position servo: an `AngleSensor`, a `DcMotor`, and a PID between them, in degrees on a circle.
 
-- **Two frames.** The raw frame is the sensor's reading. The output frame is what the tree and the API show and take: position = (−raw if `sensor.invert`, else raw) + `sensor.offset`, modulo 360. Internally, the target, the setpoint and the limits are all in the raw frame. So changing the offset or the sensor's `invert` (a calibration) never moves the motor, and loading persisted settings gives the same result in any order. The heliostat ran its PID in the output frame, so a new offset moved the axis and the encoder's `invert` changed the control's sign.
+- **Two frames.** The raw frame is the sensor's reading. The output frame is what the tree and the API show and take: position = (−r if `sensor.invert`, else r) + `sensor.offset`, modulo 360, where r = raw + c(raw) is the corrected reading (§4.2). Internally, the target, the setpoint and the limits are all in the raw frame. So changing the offset, the sensor's `invert` or its correction (a calibration) never moves the motor, and loading persisted settings gives the same result in any order. The heliostat ran its PID in the output frame, so a new offset moved the axis and the encoder's `invert` changed the control's sign.
 - **Direction:** a positive motor output must increase the raw angle; the motor's `invert` sets that. The sensor's `invert` only chooses which way the output frame turns. (A heliostat axis whose encoder was inverted needs its motor's `invert` flipped once when its settings are carried over.)
 - **Limits are physical:** an arc of the raw frame, from `begin` to `end` in increasing angles, given as `sensor/raw` reads them (jog the axis to each stop and note the reading). `begin == end` means no limits. A target outside the arc is clamped to the nearer end, measured from the arc's middle. With limits on, the path to the target is measured from the arc's middle, so the axis never moves through the forbidden side. Without limits, it takes the shortest way around.
 - **Slew:** with `maxSpeed` > 0 (°/s), the setpoint moves towards the target at that speed along the allowed path, one step per tick. A change of `maxSpeed` applies from where the setpoint is. With 0, the setpoint is the target.
@@ -180,7 +188,9 @@ An `Axis` is a closed-loop position servo: an `AngleSensor`, a `DcMotor`, and a 
 
 **States** (an enum, read-only, watched): `disabled`, `starting` (waiting for a first reading), `holding` (at the target, within tolerance), `moving`, `sensorFault`.
 
-**Programmatic API** (for applications such as the sun tracker): `setTarget(deg)` (through the slew), `setTargetNow(deg)` (the setpoint jumps; sequencers and trackers that already move smoothly), `hold()` (stops whatever the axis does: a slew, a jog, a manual output), `target()`, `position()`, `error()`, `output()`, `raw()`, `faults()`, `enable(bool)`, `enabled()`, `state()`, `setManualOutput(u)`, `claim(owner)`, `release()`, `owner()`. They take Motion's lock and may be called from any task, a part's `update()` included. The settings are public fields (`tuning`, `sensorConfig`, `limits`; the motor's `invert`, `minOutput`, `shape`): set them before `Motion::start()`, or under `axis.lock()` afterwards, as the tree does.
+**Calibration:** `calibrationPoint(reference, point)` makes a point at the current reading, which should show `reference` (output frame). `fitCorrection(points, n, harmonics)` fits points whose references are in the output frame, with the offset and `invert` as they are now, and applies the result (nullptr, else why); `correctionResiduals(points, n)` reports how well the correction explains them, with `zero` in the output frame. References are in the output frame so that `zero` is what the offset still lacks, and goes to 0 once added. Flipping the sensor's `invert` after recording turns them the wrong way: record them again. The tree keeps its points in `calibration` (a public field, under the API lock once mounted).
+
+**Programmatic API** (for applications such as the sun tracker): `setTarget(deg)` (through the slew), `setTargetNow(deg)` (the setpoint jumps; sequencers and trackers that already move smoothly), `hold()` (stops whatever the axis does: a slew, a jog, a manual output), `target()`, `position()`, `error()`, `output()`, `raw()` (uncorrected), `hasReading()`, `faults()`, `enable(bool)`, `enabled()`, `state()`, `setManualOutput(u)`, `claim(owner)`, `release()`, `owner()`. They take Motion's lock and may be called from any task, a part's `update()` included. The settings are public fields (`tuning`, `sensorConfig`, `correction`, `limits`; the motor's `invert`, `minOutput`, `shape`): set them before `Motion::start()`, or under `axis.lock()` afterwards, as the tree does.
 
 ### 4.4 Relay autotune *(later)*
 
@@ -298,7 +308,7 @@ ESP-IDF refuses to link the legacy I2C driver (`driver/i2c.h`) and the new one (
 
 ## 8. Persistence
 
-Settings are persisted with TesserAPI's `.persist()` (TesserAPI §12): an axis's `tuning`, `limits`, `sensor/config` and `motor/config`; later a sequencer's frames and `loop`, an accelerometer's `samples`. Status values (`position`, `state`, ...) aren't, and neither is `enabled`: axes boot disabled, and `stopAll()` disabling them is never half-saved. As TesserAPI loads leniently, a firmware with a renamed setting boots with its default. The limits and the target are in the raw frame (§4.3), so the order settings load in doesn't matter.
+Settings are persisted with TesserAPI's `.persist()` (TesserAPI §12): an axis's `tuning`, `limits`, `sensor/config`, `motor/config`, and its correction's `harmonics`, `points` and coefficients (`cos`, `sin`, read-only, restored when loading); later a sequencer's frames and `loop`, an accelerometer's `samples`. Status values (`position`, `state`, ...) aren't, and neither is `enabled`: axes boot disabled, and `stopAll()` disabling them is never half-saved. As TesserAPI loads leniently, a firmware with a renamed setting boots with its default. The limits and the target are in the raw frame (§4.3), so the order settings load in doesn't matter.
 
 ## 9. The trees
 
@@ -331,6 +341,19 @@ azimuth/                          label from the application
     faults      integer  (w)      read-only: failed reads since boot
     config/     (p), ui collapsed, label "Sensor settings"
       invert, offset (-360..360)
+    correction/ ui collapsed, label "Correction" (§4.2)
+      harmonics integer (p)       0..6; 0: as many as the points support, up to 3
+      points    list (p)          {raw, reference, weight}: raw 0..360, reference 0..360 (the
+                                  position it should show), weight 0..100 (0: left out); maxSize 64
+      cos, sin  arrays (p)        6 numbers each, °: a_k, b_k; read-only, written by fit and clear
+      record    action            number argument, the reference: adds a point at the current
+                                  reading; not_allowed before the first reading or when full
+      fit       action            fits the points and applies the correction; invalid_value with
+                                  the reason when it can't
+      clear     action            removes the correction; the points stay
+      residuals/                  of the points with the correction as it is, on each read
+        points  integer  (w)
+        zero, rms, max, coverage  number (w), °
   limits/       (p)               in the raw frame
     enabled, begin, end           begin and end 0..360; visibleWhen enabled
   tuning/       (p), ui collapsed
@@ -417,6 +440,7 @@ Measured as in TesserAPI §15 and TesserKIT §11: an example built with and with
    - **Autotune** *(later)* finds the plant's Ku and Tu within 20 % of their analytic values, and the gains it writes hold a target.
    - **Motor:** output mapping (clamping, NaN, shape), invert, the TB6612 truth table on fake GPIOs, standby held low when the PWM can't attach.
    - **Sequencer:** before the first frame, between frames, after the end, looping, zero duration, empty tracks (NaN), wrap, unsorted writes, refusal of axis target writes while running.
+   - **Correction:** known harmonics recovered from points with any zero (±180 included); apply and remove inverse to 10⁻⁴°; a short arc corrected on the arc and small off it; weights (0 leaves out, twice equals weight 2, light points move it less); automatic harmonics; refusals leave the correction unchanged; coverage across 0°. In an axis on a plant with an off-centre magnet: targets reached within 0.2° after a calibration from 24 points; a fit while holding doesn't move the motor; references through an inverted sensor with an offset, and the zero to add.
    - **Drivers:** MT6701 register traffic on the fake bus, 0° as a valid reading, recovery after 3 failures; ADXL345 register traffic and scaling, an absent ADXL345 sharing a bus with an MT6701 (never read, never recovering the bus), `Tilt`'s averaging, loss and return; NMEA sentences (any talker, both hemispheres, bad checksums, missing checksums, malformed fields, partial and over-long lines, no fix, void RMC), `NmeaGps`'s fix, staleness and `takeTime()`. The sentences are standard examples; real captures from the heliostat's module go in `test/nmea/` once taken.
    - **Trees:** requests through TesserAPI's handler (refusals, claims, settings, what is persisted), and golden schemas in `fixtures/*.json` (axis, motion, tilt, gps now; sequencer later) written by `tessermotion_fixtures`, as in TesserKIT §12, to be rendered in TesserUI's golden-model tests. They replace TesserUI's hand-written `motors` fixture (a gap report to TesserUI's agent).
 2. **On target:** `examples/idf/axis` (one axis on the heliostat's azimuth pins, the ADXL345 on its bus and the GPS, on TesserKIT for Wi-Fi and the interface; later a sequencer), driven by `test/e2e_motion.py` over HTTP and WebSocket: enable, move to targets and read back positions within tolerance, slew timing, limits, a sequence run, a sensor fault (unplugging is manual; the script asks), autotune, persistence across a restart. Motors move: see AGENTS.md before running it.
@@ -445,7 +469,7 @@ TesserMotion/
 
 | Item | For |
 |---|---|
-| Steppers: a TMC5160 driver on `spi_master` (its ramp generator, without FastAccelStepper), `StepperAxis` with encoder correction and the 128-point linearization table | spin-seq, TesserKIT phase 4 |
+| Steppers: a TMC5160 driver on `spi_master` (its ramp generator, without FastAccelStepper), `StepperAxis`, and an automatic calibration feeding §4.2's correction (steps as references, both directions to cancel backlash; it replaces spin-seq's 128-point linearization table) | spin-seq, TesserKIT phase 4 |
 | Multi-turn angle sensors (unwrapped position, turns) | continuous rotation axes |
 | Other encoders: AS5600 (I2C), AS5048A (SPI) | other mechanics |
 | A command sequencer (spin-seq's typed commands, TesserKIT §10.2) | spin-seq |

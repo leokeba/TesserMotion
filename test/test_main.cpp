@@ -2,6 +2,7 @@
 #include "driver_cases.h"
 #include "sensor_cases.h"
 #include "axis_cases.h"
+#include "correction_cases.h"
 #include "motion_cases.h"
 #include "tree_cases.h"
 

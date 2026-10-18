@@ -22,6 +22,8 @@ struct PlantParams {
     float timeConstant = 0.05f;  // s
     float deadBand = 0.12f;      // duty below which the motor doesn't turn
     float noise = 0.01f;         // ° of encoder noise (uniform, ±)
+    // The encoder's error at a true angle, such as an off-centre magnet's.
+    float (*sensorError)(float angle) = nullptr;
 };
 
 class Plant : public tessermotion::DcMotor, public tessermotion::AngleSensor {

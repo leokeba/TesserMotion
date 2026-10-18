@@ -166,6 +166,49 @@ TEST(tree_gps) {
     CHECK(r.set("/gps/fix", "\"gps\"").status != tesser::Status::Ok);  // read-only
 }
 
+TEST(tree_axis_correction) {
+    TreeRig r;
+    const std::string c = "/azimuth/sensor/correction";
+    r.run(0.1f);
+    // Recorded at the reading (100°), referenced in the output frame.
+    CHECK(r.set(c + "/record", "110").status == tesser::Status::Ok);
+    CHECK_EQ(r.axis.calibration.points.size(), size_t(1));
+    CHECK(fabsf(r.number(c + "/points/0/raw") - 100) < 0.05f);
+    CHECK(fabsf(r.number(c + "/points/0/reference") - 110) < 1e-4f);
+    CHECK_EQ(r.get(c + "/residuals/points").body, "1");
+    CHECK(fabsf(r.number(c + "/residuals/zero") - 10) < 0.05f);
+    // Too few points for the harmonics asked.
+    CHECK(r.set(c + "/harmonics", "2").status == tesser::Status::Ok);
+    CHECK(r.set(c + "/fit", "").status == tesser::Status::InvalidValue);
+    // Points written whole, from elsewhere: a 1° first harmonic.
+    std::string points = "[";
+    for (int i = 0; i < 12; i++) {
+        float raw = 30.0f * static_cast<float>(i);
+        float ref = wrap360(raw + sinf(raw * 0.017453292f));
+        points += (i ? "," : "") + std::string("{\"raw\":") + std::to_string(raw) + ",\"reference\":" + std::to_string(ref) + "}";
+    }
+    CHECK(r.set(c + "/points", points + "]").status == tesser::Status::Ok);
+    CHECK(r.number(c + "/residuals/max") > 0.9f);
+    float before = r.number("/azimuth/position");
+    CHECK(r.set(c + "/fit", "").status == tesser::Status::Ok);
+    CHECK(fabsf(r.number(c + "/sin/0") - 1) < 0.01f);
+    CHECK(r.number(c + "/residuals/max") < 0.01f);
+    CHECK(fabsf(r.number(c + "/residuals/coverage") - 330) < 0.01f);
+    CHECK(fabsf(r.number("/azimuth/position") - before - sinf(100 * 0.017453292f)) < 0.01f);
+    CHECK(r.set(c + "/sin/0", "0").status != tesser::Status::Ok);  // only fit writes them
+    // Saved: the coefficients, the points and the harmonics.
+    tesser::MemoryStorage storage;
+    r.api.persistence(storage);
+    std::string state = r.api.persistedState();
+    CHECK(state.find("\"correction\":{\"harmonics\":2,\"points\":[{\"raw\":0,") != std::string::npos);
+    CHECK(state.find("\"sin\":[0.99") != std::string::npos);
+    CHECK(state.find("residuals") == std::string::npos);
+    CHECK(r.set(c + "/clear", "").status == tesser::Status::Ok);
+    CHECK_EQ(r.axis.correction.harmonics(), 0);
+    CHECK_EQ(r.axis.calibration.points.size(), size_t(12));
+    CHECK(fabsf(r.number("/azimuth/position") - before) < 0.05f);
+}
+
 TEST(tree_persists_settings_only) {
     TreeRig r;
     tesser::MemoryStorage storage;

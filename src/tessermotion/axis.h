@@ -5,14 +5,17 @@
 //
 // Internally everything is in the sensor's raw frame, in which a positive
 // motor output must increase the angle (set the motor's `invert` for that).
-// The output frame, position = ±raw + offset, is only how angles are shown
-// and given, so changing the offset or the sensor's `invert` never moves the
-// motor, and limits stay at the same mechanical stops.
+// The output frame, position = ±(raw + correction) + offset, is only how
+// angles are shown and given, so changing the offset, the sensor's `invert`
+// or its correction never moves the motor, and limits stay at the same
+// mechanical stops.
 
 #include <stdint.h>
 
 #include <string>
+#include <vector>
 
+#include "tessermotion/angle_correction.h"
 #include "tessermotion/angle_sensor.h"
 #include "tessermotion/dc_motor.h"
 #include "tessermotion/motion.h"
@@ -47,6 +50,13 @@ public:
         bool invert = false;  // the output frame turns the other way
         float offset = 0;     // °, added after invert
     };
+    // Points for the correction, with references in the output frame (the
+    // position each should show), and the harmonics to fit (0: as many as
+    // they support). The tree's: under the API lock once it's mounted.
+    struct Calibration {
+        std::vector<CalPoint> points;
+        int harmonics = 0;
+    };
     // An arc of the raw frame, from `begin` to `end` in increasing angles;
     // the axis never crosses the rest. begin == end: no limits.
     struct Limits {
@@ -61,7 +71,10 @@ public:
     // (the tree does).
     Tuning tuning;
     SensorConfig sensorConfig;
+    // The sensor's error, in the raw frame (docs/DESIGN.md section 4.2).
+    AngleCorrection correction;
     Limits limits;
+    Calibration calibration;
 
     // From any task, a part's update() included: these take Motion's lock.
     void enable(bool on);
@@ -93,9 +106,21 @@ public:
     float target();    // output frame
     float error();     // setpoint − position, along the allowed path
     float output();    // the motor's, -1..1
-    float raw();       // the last reading
+    float raw();       // the last reading, uncorrected
+    bool hasReading();
     uint32_t faults();  // failed reads since boot
     AxisState state();
+
+    // A point at the current reading that should show `reference` (output
+    // frame). False before the first reading.
+    bool calibrationPoint(float reference, CalPoint& point);
+    // Fits the correction to points whose references are in the output
+    // frame (the sensor's offset and `invert` as they are now), and applies
+    // it. nullptr on success, else why, and the correction is unchanged.
+    const char* fitCorrection(const CalPoint* points, size_t n, int harmonics = 0);
+    // How well the correction explains the points. `zero` is in the output
+    // frame: what to add to the sensor's offset for the references' zero.
+    AngleCorrection::Residuals correctionResiduals(const CalPoint* points, size_t n);
 
     DcMotor& motor() { return motor_; }
     AngleSensor& sensor() { return sensor_; }
@@ -111,6 +136,10 @@ private:
     void reset();
     float toOutput(float raw) const;
     float toRaw(float out) const;
+    // The output frame to the corrected raw frame: ±(out − offset).
+    float toSensor(float out) const;
+    // The points with references in the corrected raw frame.
+    std::vector<CalPoint> toSensor(const CalPoint* points, size_t n);
     float clamp(float raw) const;
     float path(float from, float to) const;
     void drive(float u);

@@ -9,7 +9,7 @@ using tessermotion::wrap360;
 bool Plant::read(float& degrees) {
     reads++;
     if (failing) return false;
-    float a = wrap360(angle_ + noise());
+    float a = wrap360(angle_ + noise() + (params_.sensorError ? params_.sensorError(wrap360(angle_)) : 0.0f));
     auto counts = static_cast<uint32_t>(lroundf(a * (16384.0f / 360.0f))) & 16383u;
     degrees = static_cast<float>(counts) * (360.0f / 16384.0f);
     return true;
