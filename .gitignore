@@ -7,3 +7,4 @@ dependencies.lock
 sdkconfig
 sdkconfig.old
 .cache/
+.DS_Store
