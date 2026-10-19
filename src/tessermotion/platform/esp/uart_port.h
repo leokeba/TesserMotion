@@ -1,6 +1,6 @@
 #pragma once
 
-// A UART on ESP-IDF's driver, receive only (docs/DESIGN.md section 7.3).
+// A UART on ESP-IDF's driver (docs/DESIGN.md section 7.3).
 
 #if defined(ESP_PLATFORM)
 
@@ -17,14 +17,17 @@ struct UartConfig {
 
 class UartPort : public Uart {
 public:
-    // The driver's receive buffer. The control task drains it every tick,
-    // which is 20 bytes at 9600 baud and 50 Hz.
+    // The driver's receive buffer. The control task drains it every tick:
+    // 20 bytes at 9600 baud and 50 Hz.
     static constexpr int kRxBufferBytes = 256;
 
     explicit UartPort(const UartConfig& config) : config_(config) {}
 
     bool begin() override;
     size_t read(uint8_t* buf, size_t max) override;
+    size_t read(uint8_t* buf, size_t len, uint32_t timeoutMs) override;
+    // False without a TX pin.
+    bool write(const uint8_t* buf, size_t len) override;
 
 private:
     UartConfig config_;

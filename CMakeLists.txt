@@ -11,10 +11,14 @@ set(TESSERMOTION_CORE_SRCS
     src/tessermotion/motion.cpp
     src/tessermotion/tilt.cpp
     src/tessermotion/nmea_gps.cpp
+    src/tessermotion/tmc_driver.cpp
+    src/tessermotion/tmc5160.cpp
+    src/tessermotion/tmc2209.cpp
     src/tessermotion/axis_tree.cpp
     src/tessermotion/motion_tree.cpp
     src/tessermotion/tilt_tree.cpp
-    src/tessermotion/gps_tree.cpp)
+    src/tessermotion/gps_tree.cpp
+    src/tessermotion/tmc_tree.cpp)
 
 if(ESP_PLATFORM)
     # TesserAPI is a hard dependency. Its component name depends on how it
@@ -36,10 +40,10 @@ if(ESP_PLATFORM)
     endif()
     # The drivers left "driver" in ESP-IDF 5.3.
     if(IDF_VERSION_MAJOR GREATER 5 OR (IDF_VERSION_MAJOR EQUAL 5 AND IDF_VERSION_MINOR GREATER_EQUAL 3))
-        set(TESSERMOTION_I2C_REQ esp_driver_i2c)
+        set(TESSERMOTION_BUS_REQS esp_driver_i2c esp_driver_spi)
         set(TESSERMOTION_DRIVER_REQS esp_driver_gpio esp_driver_ledc esp_driver_uart)
     else()
-        set(TESSERMOTION_I2C_REQ driver)
+        set(TESSERMOTION_BUS_REQS driver)
         set(TESSERMOTION_DRIVER_REQS "")
     endif()
     idf_component_register(
@@ -47,10 +51,11 @@ if(ESP_PLATFORM)
              src/tessermotion/platform/esp/gpio_esp.cpp
              src/tessermotion/platform/esp/pwm_esp.cpp
              src/tessermotion/platform/esp/i2c_bus.cpp
+             src/tessermotion/platform/esp/spi_bus.cpp
              src/tessermotion/platform/esp/task_esp.cpp
              src/tessermotion/platform/esp/uart_port.cpp
         INCLUDE_DIRS "src"
-        REQUIRES ${TESSERMOTION_I2C_REQ}  # i2c_bus.h includes driver/i2c_master.h
+        REQUIRES ${TESSERMOTION_BUS_REQS}  # i2c_bus.h and spi_bus.h include driver/i2c_master.h, driver/spi_master.h
         PRIV_REQUIRES ${TESSERMOTION_DRIVER_REQS} esp_timer log)
     # Public: the trees' header includes TesserAPI's.
     if(TESSERMOTION_TESSERAPI)
@@ -109,7 +114,7 @@ target_compile_options(tessermotion_core PRIVATE ${TESSERMOTION_WARNINGS})
 add_library(tessermotion_fake_hw OBJECT test/fake_hw.cpp)
 target_include_directories(tessermotion_fake_hw PUBLIC test)
 target_link_libraries(tessermotion_fake_hw PUBLIC tessermotion_core)
-add_library(tessermotion_testing test/plant.cpp)
+add_library(tessermotion_testing test/plant.cpp test/fake_tmc.cpp)
 target_sources(tessermotion_testing INTERFACE $<TARGET_OBJECTS:tessermotion_fake_hw>)
 target_include_directories(tessermotion_testing PUBLIC test)
 target_link_libraries(tessermotion_testing PUBLIC tessermotion_core)

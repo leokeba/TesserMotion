@@ -1,8 +1,8 @@
 # TesserMotion
 
-Motion control and sensing for ESP32 on [TesserAPI](https://github.com/leokeba/TesserAPI): DC motors, encoders and closed-loop axes, run by a fixed-rate control task. Every part describes itself into a TesserAPI tree, so it is reachable over HTTP, WebSocket and serial, and drawn by [TesserUI](https://github.com/leokeba/TesserUI) without UI code.
+Motion control and sensing for ESP32 on [TesserAPI](https://github.com/leokeba/TesserAPI): DC motors, encoders, closed-loop axes and Trinamic stepper drivers, run by a fixed-rate control task. Every part describes itself into a TesserAPI tree, so it is reachable over HTTP, WebSocket and serial, and drawn by [TesserUI](https://github.com/leokeba/TesserUI) without UI code.
 
-Status: early. A TB6612 motor driver, the MT6701 encoder, a closed-loop `Axis` (PID, limits, slew, sensor timeout, jog), the `Motion` control task, host-tested against a simulated motor and run on the heliostat; an ADXL345 accelerometer (`Tilt`) and an NMEA GPS (`NmeaGps`), host-tested. Sequencers come next. See [docs/DESIGN.md](docs/DESIGN.md).
+Status: early. A TB6612 motor driver, the MT6701 encoder, a closed-loop `Axis` (PID, limits, slew, sensor timeout, jog), the `Motion` control task, host-tested against a simulated motor and run on the heliostat; an ADXL345 accelerometer (`Tilt`) and an NMEA GPS (`NmeaGps`), run on the heliostat; Trinamic TMC5160 (SPI) and TMC2209 (UART) drivers, with every register listed from maps generated from [TMC-API](https://github.com/analogdevicesinc/TMC-API), host-tested. Sequencers come next. See [docs/DESIGN.md](docs/DESIGN.md).
 
 ```cpp
 #include <TesserMotion.h>
@@ -23,7 +23,7 @@ void setup() {
 }
 ```
 
-Arduino-ESP32 ≥ 3.2 and ESP-IDF ≥ 5.2; ESP32, ESP32-S3, ESP32-C3. Examples: [examples/idf/axis](examples/idf/axis), [examples/arduino/Axis](examples/arduino/Axis), both on [TesserKIT](https://github.com/leokeba/TesserKIT) for Wi-Fi and the web interface.
+Arduino-ESP32 ≥ 3.2 and ESP-IDF ≥ 5.2; ESP32, ESP32-S3, ESP32-C3. Examples: [examples/idf/axis](examples/idf/axis), [examples/arduino/Axis](examples/arduino/Axis), [examples/arduino/Stepper](examples/arduino/Stepper), all on [TesserKIT](https://github.com/leokeba/TesserKIT) for Wi-Fi and the web interface.
 
 ## Host tests
 

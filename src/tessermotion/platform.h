@@ -41,6 +41,24 @@ public:
     virtual void recover() = 0;
 };
 
+// A device on an SPI bus: its chip select, mode (0..3) and clock.
+struct SpiDevice {
+    int cs;
+    uint8_t mode = 0;
+    uint32_t hz = 1000000;
+};
+
+class Spi {
+public:
+    virtual ~Spi() = default;
+    // Sets the bus up; every device on it calls it, so it may run again.
+    virtual bool begin() = 0;
+    // Sends `len` bytes from `tx` while receiving `len` into `rx`, with the
+    // device selected. False on a bus error (SPI has no acknowledgement: an
+    // absent device reads as whatever MISO floats to).
+    virtual bool transfer(const SpiDevice& device, const uint8_t* tx, uint8_t* rx, size_t len) = 0;
+};
+
 class Uart {
 public:
     virtual ~Uart() = default;
@@ -48,6 +66,11 @@ public:
     virtual bool begin() = 0;
     // Up to `max` received bytes, without waiting: 0 when none came.
     virtual size_t read(uint8_t* buf, size_t max) = 0;
+    // `len` bytes, waiting at most `timeoutMs` for them all: the count
+    // received.
+    virtual size_t read(uint8_t* buf, size_t len, uint32_t timeoutMs) = 0;
+    // Queues `len` bytes to send; false if they couldn't be.
+    virtual bool write(const uint8_t* buf, size_t len) = 0;
 };
 
 // The chip's GPIO and LEDC, used by drivers given none (tests give fakes).

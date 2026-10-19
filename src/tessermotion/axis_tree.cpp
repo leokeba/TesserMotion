@@ -2,6 +2,7 @@
 
 #include "tesser/status.h"
 #include "tesser/value_types.h"
+#include "tessermotion/tree_setting.h"
 #include "tessermotion/trees.h"
 
 namespace tessermotion {
@@ -11,23 +12,6 @@ namespace {
 using tesser::Check;
 using tesser::Object;
 using tesser::Status;
-using tesser::ValueNode;
-
-// A setting read and written under the part's lock, since the control task
-// reads it while transports write it.
-template <class T>
-ValueNode& setting(Object& o, const char* name, Part& part, T& field) {
-    return o.value(
-        name,
-        [&part, &field] {
-            Guard g(part.lock());
-            return field;
-        },
-        [&part, &field](T v) {
-            Guard g(part.lock());
-            field = v;
-        });
-}
 
 // Refuses a tree write to a claimed axis, naming the owner. The message must
 // outlive the call: requests run under the API lock, so one buffer serves

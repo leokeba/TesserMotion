@@ -6,5 +6,6 @@
 #include "correction_cases.h"
 #include "motion_cases.h"
 #include "tree_cases.h"
+#include "tmc_cases.h"
 
 int main(int argc, char** argv) { return check::run(argc > 1 ? argv[1] : nullptr) ? 1 : 0; }

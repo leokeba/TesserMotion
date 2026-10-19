@@ -16,9 +16,14 @@
 #include "tessermotion/platform.h"
 #include "tessermotion/tb6612.h"
 #include "tessermotion/tilt.h"
+#include "tessermotion/tmc2209.h"
+#include "tessermotion/tmc5160.h"
+#include "tessermotion/tmc_driver.h"
+#include "tessermotion/tmc_map.h"
 #include "tessermotion/trees.h"
 
 #if defined(ESP_PLATFORM)
 #include "tessermotion/platform/esp/i2c_bus.h"
+#include "tessermotion/platform/esp/spi_bus.h"
 #include "tessermotion/platform/esp/uart_port.h"
 #endif

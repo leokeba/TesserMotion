@@ -1,6 +1,6 @@
 # TesserMotion design
 
-Status: phases 1 and 2 implemented (2026-10-11): the platform layer, `DcMotor`/`Tb6612Channel`, `Mt6701`, `Axis`, `Motion` and their trees, host-tested against a simulated plant, and commissioned on the heliostat's two axes (through tiny-heliostat). Phase 4's sensors (`Adxl345` with `Tilt`, `NmeaGps`) implemented, host-tested, and run on the second heliostat (2026-10-16, through tiny-heliostat): tilt, GPS fix and the clock set from GPS. The angle sensor's correction (§4.2) implemented and host-tested (2026-10-18), and the accelerometer's (§6.1, 2026-10-19); neither run on hardware yet. This is the specification the code follows; when the two disagree, fix one of them. Sections marked *(later)* are committed to but not implemented yet. References to TesserAPI, TesserUI and TesserKIT point to their own DESIGN.md: [TesserAPI](https://github.com/leokeba/TesserAPI/blob/main/docs/DESIGN.md), [TesserUI](https://github.com/leokeba/TesserUI/blob/main/docs/DESIGN.md), [TesserKIT](https://github.com/leokeba/TesserKIT/blob/main/docs/DESIGN.md).
+Status: phases 1 and 2 implemented (2026-10-11): the platform layer, `DcMotor`/`Tb6612Channel`, `Mt6701`, `Axis`, `Motion` and their trees, host-tested against a simulated plant, and commissioned on the heliostat's two axes (through tiny-heliostat). Phase 4's sensors (`Adxl345` with `Tilt`, `NmeaGps`) implemented, host-tested, and run on the second heliostat (2026-10-16, through tiny-heliostat): tilt, GPS fix and the clock set from GPS. The angle sensor's correction (§4.2) implemented and host-tested (2026-10-18), and the accelerometer's (§6.1, 2026-10-19); neither run on hardware yet. The Trinamic drivers (§4.7, `Tmc5160` on SPI, `Tmc2209` on UART) and their register maps generated from TMC-API (§4.8) implemented and host-tested against simulated chips (2026-10-19), not run on hardware yet. This is the specification the code follows; when the two disagree, fix one of them. Sections marked *(later)* are committed to but not implemented yet. References to TesserAPI, TesserUI and TesserKIT point to their own DESIGN.md: [TesserAPI](https://github.com/leokeba/TesserAPI/blob/main/docs/DESIGN.md), [TesserUI](https://github.com/leokeba/TesserUI/blob/main/docs/DESIGN.md), [TesserKIT](https://github.com/leokeba/TesserKIT/blob/main/docs/DESIGN.md).
 
 ## 1. Goals
 
@@ -16,7 +16,7 @@ TesserMotion is a library of motion control and sensing for ESP32 devices built 
 ### Non-goals
 
 - Application geometry: sun position, mount orientation solving, the joint accelerometer and encoder calibration, sources and targets. They stay in the heliostat.
-- Steppers in the first release (§13).
+- Stepper axes and step generation in the first release (§13). The Trinamic drivers (§4.7) are in: they configure the chips, and turn the motor through the chips' own generators.
 - Motion planning beyond one axis: synchronized multi-axis moves come from a sequencer with one track per axis (§5), not from a planner.
 
 ## 2. Constraints
@@ -40,7 +40,8 @@ TesserMotion is a library of motion control and sensing for ESP32 devices built 
                    ├─▶ Axis ──▶ AngleSensor (Mt6701 on I2cBus)
                    │        └─▶ DcMotor (Tb6612Channel on Pwm + Gpio)
                    ├─▶ Tilt ──▶ Accelerometer (Adxl345 on I2cBus, shareable with an Mt6701)
-                   └─▶ NmeaGps (Nmea on Uart)
+                   ├─▶ NmeaGps (Nmea on Uart)
+                   └─▶ TmcDriver (Tmc5160 on Spi, Tmc2209 on Uart)
 
  tesser::Api ◀── describe(Object&, Axis&), describe(Object&, Sequencer&), ...
 ```
@@ -49,7 +50,7 @@ TesserMotion is a library of motion control and sensing for ESP32 devices built 
 
 | Layer | Content | Depends on |
 |---|---|---|
-| Driver | `Tb6612Channel`, `Tb6612Standby`, `Mt6701`, `Adxl345`, `NmeaGps`: register maps, pin logic, scaling. | The platform interfaces (§3.3). |
+| Driver | `Tb6612Channel`, `Tb6612Standby`, `Mt6701`, `Adxl345`, `NmeaGps`, `Tmc5160`, `Tmc2209`: register maps, pin logic, scaling. | The platform interfaces (§3.3). |
 | Controller | `DcMotor` output mapping, `Axis` (with its PID), `RelayAutotune`, `Sequencer`, `Tilt`, `Motion`; the `Nmea` parser. Pure logic; time comes in as an argument. | Drivers through their interfaces (`AngleSensor`, `DcMotor`, `Accelerometer`). |
 | Tree | `describe()` free functions, found by argument-dependent lookup as TesserAPI's `mount()` expects (TesserAPI §4.3), in their own `*_tree.cpp` files. | TesserAPI. |
 
@@ -94,12 +95,14 @@ Narrow interfaces in `src/tessermotion/platform.h`, an ESP implementation in `sr
 | `Gpio` | `output(pin, level)`, `set(pin, level)` | `driver/gpio.h` |
 | `Pwm` | `attach(pin, frequencyHz) → channel`, `duty(channel, fraction 0..1)` | LEDC (§7.2) |
 | `I2c` | `begin()` (idempotent: every device on the bus calls it), `read(addr, reg, buf, len)`, `write(addr, reg, buf, len)`, `recover()` | `I2cBus`, on `driver/i2c_master.h` (§7.1) |
-| `Uart` | `begin()`, non-blocking `read(buf, max) → n` | `UartPort`, on `driver/uart.h` (§7.3) |
+| `Spi` | `begin()` (idempotent), `transfer(device, tx, rx, len)`, a device being its chip select, mode and clock | `SpiBus`, on `driver/spi_master.h` (§7.4) |
+| `Uart` | `begin()`, non-blocking `read(buf, max) → n`, `read(buf, len, timeoutMs) → n` (waits for `len` bytes), `write(buf, len)` | `UartPort`, on `driver/uart.h` (§7.3) |
 | `Lock` | `lock()`, `unlock()`; recursive | a static FreeRTOS recursive mutex; `std::recursive_mutex` on the host |
 | `startPeriodic(task, periodUs, tick)`, `nowUs()` | free functions: the control task and the clock | `xTaskCreatePinnedToCore` with `vTaskDelayUntil`; `esp_timer_get_time()` |
 
 - **Defaults:** a TB6612 takes a `Gpio*` and a `Pwm*`, null by default, meaning the chip's (`defaultGpio()`, `defaultPwm()`). Tests pass fakes, or use the defaults, which the fakes provide on the host.
 - **`UartPort`** is a concrete class on ESP too: `UartPort uart({.rx, .tx, .baud, .port})`, 9600 baud and UART 1 by default.
+- **`SpiBus`** is a concrete class on ESP (`SpiBus spi({.sclk, .mosi, .miso, .host})`, SPI2 by default) that implements `Spi`. `SpiBus(host)` shares a host other code initialized (an Ethernet chip's).
 - **`I2cBus`** is a concrete class on ESP (`I2cBus bus({.sda, .scl, .port, .hz})`) that implements `I2c`. It can also wrap a bus handle the application already created (`I2cBus bus(existingHandle)`), so TesserMotion shares a bus with other code; Arduino's `Wire` gives its handle with `i2cBusHandle(num)`.
 
 ### 3.4 What each layer owns
@@ -123,7 +126,7 @@ Two kinds of tasks touch a part: transports change settings and read status thro
 - **Lock order:** the API lock, then Motion's lock. The control task never takes the API lock. Status values reach subscribers because TesserAPI samples watched getters under its own lock, and those getters take Motion's lock briefly.
 - **Only the control task drives hardware.** A tree write records a request (a new target, enable, a manual output), and the next tick applies it. No setter calls a motor or a sensor. This removes the heliostat's race, where `setAngle()` called `run()` from the HTTP task while the control task was running (§4.6).
 
-## 4. DC motors and axes
+## 4. Motors and axes
 
 ### 4.1 DC motors and the TB6612
 
@@ -229,6 +232,41 @@ When an application asks for it: an opt-in part, not described in the tree and n
 | `double` everywhere, software floating point. | `float` (§2). |
 | Teleplot UDP telemetry, `Serial.printf` profiling. | Watched values with charts (§9.1), `Motion` statistics (§3.2). |
 
+### 4.7 Trinamic stepper drivers
+
+```cpp
+SpiBus spi({.sclk = 18, .mosi = 23, .miso = 19});
+Tmc5160 stepper(spi, {.cs = 5, .enable = 4});            // a Part: motion.add(stepper); api.mount("stepper", stepper);
+UartPort tmcUart({.rx = 16, .tx = 17, .baud = 115200});
+Tmc2209 small(tmcUart, {.address = 0, .enable = 21});
+```
+
+`TmcDriver` holds what the chips share; `Tmc5160` (SPI, its own ramp generator) and `Tmc2209` (single-wire UART, a step and direction driver) add their transport, their current scaling and their motion. They are drivers, not axes: they configure the chip, report its state, and turn the motor through the chip's own generators. A stepper axis in degrees, a step generator for step and direction inputs, and a calibration against an encoder come later (§13).
+
+- **A Part.** The control task makes every transfer. Each tick, `sense()` writes what changed (up to 16 registers on SPI, 4 on the UART, where a write takes 0.7 ms at 115200 baud), then reads the chip's state: the TMC5160's `GSTAT`, `DRV_STATUS` and `XACTUAL`; the TMC2209's `DRV_STATUS`, about 1.2 ms. It also reads one other readable register in turn, so the register list (§4.8) stays fresh: every readable register within 23 ticks on the TMC5160 (0.46 s at 50 Hz), 14 on the TMC2209. Requests from other tasks (settings, motion, register writes) reach the chip on the next tick.
+- **A copy of every register.** The driver keeps what it last read (readable registers) or wrote (write-only ones). Each tick, under the lock, it sets the bits its settings and its motion own in that copy, and a register whose value changed is written. A register written through `writeRegister()` keeps its other bits; the owned ones follow their setting again on the next tick. Writes go in increasing addresses, which on the TMC5160 puts `RAMPMODE` before `VMAX` before `XTARGET`. A register about to be written isn't overwritten by a read in between.
+- **Configuration**, at `begin()` and whenever the chip is found again: the driver reads the readable registers nothing wrote (its status, its position), writes TMC-API's sample configuration (the TMC5160's `GCONF`, `SHORT_CONF`, `DRV_CONF`, `IHOLD_IRUN`, `TPOWERDOWN`, `VSTOP`, `ENC_CONST`, `CHOPCONF`; the TMC2209's `GCONF`, `IHOLD_IRUN`, `TPOWERDOWN`, `CHOPCONF`, `PWMCONF`) under every register written since boot, applies the settings, and clears `GSTAT`.
+- **Absent and reset chips.** A chip found by its version in `IOIN` (0x30, 0x21) is present. Three failed reads in a row make it absent (an SPI reply of all ones, a UART reply missing, short or with a bad CRC, a version read in turn that isn't the chip's), and it is looked for every 2 s, as the tilt's sensor is. `GSTAT.reset` read set means the chip lost power (its motor supply, on boards that power the logic from it): it is counted (`resets`) and configured again, disabled. A reset chip lost its position, so the driver never resumes a motion by itself.
+- **Enabling:** drivers boot disabled. Disabled is `TOFF` 0 (the power stage off, the motor free) and the enable pin high, if one is given (DRV_ENN, active low; -1 for a board that ties it low). Enabling or disabling stops any motion, and `stopAll()` disables. The tree refuses enabling an absent driver.
+- **Settings,** in physical units: `runCurrent` and `holdCurrent` (A rms; the hold current at most the run current, `IHOLDDELAY` and `TPOWERDOWN` from the sample configuration), `microsteps` (1 to 256, a power of 2: `MRES`), `interpolate` (to 256 microsteps, `intpol`), `invert` (`shaft`), `stealthChop` (the TMC5160's `en_pwm_mode`, the TMC2209's `en_spreadcycle` inverted) and `stealthChopMax` (full steps/s above which spreadCycle takes over: `TPWMTHRS` = f_CLK / (256 · v), 0 for stealthChop at any speed), and `deadman`. The chopper's `toff` (1 to 15), `hstrt`, `hend` and `tbl` are in the datasheet's units, defaults 3, 4, 1, 2. Everything else (stealthChop's PWM, coolStep, stallGuard, the short detection) keeps the sample configuration, reachable through the register list.
+- **Current, TMC5160:** I_rms = `GLOBAL_SCALER`/256 · (CS + 1)/32 · 0.325 V / R_sense / √2. The scaler takes the run current with CS 31 (its values 1 to 31 aren't allowed, so it is 32 to 256, 256 written as 0), and `IRUN` and `IHOLD` are then rounded at that scale: 0.5 A through 0.075 Ω is scaler 42, `IRUN` 31, and 0.25 A `IHOLD` 15. The most is 3.06 A at 0.075 Ω.
+- **Current, TMC2209:** I_rms = (CS + 1)/32 · V_fs / (R_sense + 20 mΩ) / √2, V_fs 0.325 V, or 0.180 V with `vsense` when the run current would take a CS under 16 (finer steps for small currents): 0.5 A through 0.11 Ω is `vsense`, `IRUN` 15, and 0.25 A `IHOLD` 7. The UART configures it: `pdn_disable`, `mstep_reg_select`, `i_scale_analog` 0 (not the board's VREF potentiometer) and `multistep_filt` are set.
+- **Velocity:** `setVelocity(µsteps/s)`, signed, is a deadman like an axis's manual output (§4.3): not renewed for `deadman` (1 s), it stops, and the tree hints `ui.keepalive` 400 ms. The chips count velocities in microsteps per 2^24 clock cycles (0.715 Hz at the internal 12 MHz; `clockHz` for an external clock). The TMC5160 runs it in velocity mode (`RAMPMODE` 1 or 2, `VMAX` = |v| capped at the ramp's `maxSpeed`, accelerating at `acceleration`); the TMC2209 writes `VACTUAL`, at once (it has no ramp: large jumps can stall a loaded motor). Refused unless enabled and present.
+- **Positioning,** TMC5160 only: `setTarget(µsteps)` writes `RAMPMODE` 0, `VMAX` at `maxSpeed` and `XTARGET`. The ramp is a trapezoid: `AMAX` = `DMAX` = `A1` = `D1` = a · 2^41 / f_CLK² (at least 1: `D1` 0 isn't allowed when positioning), `V1` 0, `VSTART` 0, `VSTOP` 10 (the datasheet's suggestion). Defaults: 51 200 µsteps/s and 51 200 µsteps/s², a turn per second of a 200-step motor at 256 microsteps. `hold()` and a disable switch to velocity mode at `VMAX` 0, which decelerates and stays. Positions count microsteps at the configured resolution (`XACTUAL`'s unit), from wherever the chip started. A TMC5160 strapped for step and direction (`SD_MODE` high, read in `IOIN`) only drives: `setTarget()` and `setVelocity()` are refused, and the steps come from elsewhere.
+- **Status:** `standstill`, `stealthChop` (running in it now), `current` (`CS_ACTUAL`), `overtemperature`, `overtemperatureWarning`, `shortToGround` and `shortToSupply` (either coil), `openLoad` (either coil, unreliable at standstill and at speed), `driverError` (`GSTAT.drv_err`), `resets`, `errors` (failed transfers since boot).
+- **The TMC5160's SPI:** mode 3, 4 MHz by default. A datagram is 40 bits, the address (bit 7 set to write) and 32 data bits; its reply carries the status byte and the data the previous datagram asked for, so a read is two transfers. Writes aren't acknowledged.
+- **The TMC2209's UART:** a read request is 4 bytes (sync 0x05, the node's address 0 to 3 from MS1 and MS2, the register, a CRC-8), its reply 8 (0x05, 0xFF, the register, 32 data bits, the CRC); a write is 8 bytes (the register | 0x80), unanswered. The CRC is the datasheet's (polynomial 7, bits taken LSB first), which agrees with TMC-API's table. Wired with TX through 1 kΩ to PDN_UART and RX straight to it, each request comes back before the reply: the driver tells the echo from the reply on each read, and consumes the echo of each write. A read waits up to 10 ms (a reply takes 1.1 ms at 115200 baud, but the RTOS tick is 10 ms). Up to four drivers share a UART at different addresses.
+
+### 4.8 Register maps
+
+A Trinamic chip has tens of registers and hundreds of fields: 62 registers and 190 fields on the TMC5160, 24 and 84 on the TMC2209 (TMC-API's TMC5160 header defines 480 field macros: 256 for the bits of the microstep table, and its fields repeated for each mode). The settings (§4.7) cover the few an application tunes; the register list covers the rest, for commissioning and experiments.
+
+- **Generated from TMC-API.** `tools/tmc_maps.py` reads a TMC-API checkout ([analogdevicesinc/TMC-API](https://github.com/analogdevicesinc/TMC-API), MIT) and writes `src/tessermotion/tmc/<chip>_map.h`, committed: a constant per register address (`tmc5160::CHOPCONF`) and per field (`tmc5160::toff`, a `TmcField`: register, shift, width, sign), and the same as tables (`kRegisters`, `kFields`, `kMap`) with each register's access, preset and fields, and the TMC-API revision. TMC-API's C code isn't used: two of its chip headers can't be included in one C++ file (each defines its own `RegisterField`), its hardware hooks are global C functions per chip family, and its register copies are sized at compile time. Its register data is what is worth having.
+- **Corrections.** The generator refuses a field whose mask and shift disagree, so new errata show. TMC-API's TMC2209 has three (`OTP_READ`'s bytes, masks 0x01, 0x02, 0x04 at shifts 0, 8, 16; `OTTRIM`, mask 0x30 at shift 8), fixed from the datasheet in the generator's table. It also drops what isn't a field: the SPI status byte's bits given as fields of `GSTAT`, `RAMPSTAT` and `DRV_STATUS`, and second names for the same bits (the TMC5160's `tfd_all`, `tfd_3`). Mangled names get the datasheet's (`TFD_2__0_` is `tfd`, `TFD__` is `fd3`). A register split into a bit per field (the `MSLUT` words) is its own value. Field names are lower case; a name used in two registers is prefixed with its register's.
+- **Access:** `read`, `write`, `readWrite` and `readClear` (flags cleared by writing 1). The TMC5160's `INP_OUT` reads `IOIN` and writes `OUTPUT`. Presets: TMC-API's sample configuration (written by a configuration, §4.7), or a write-only register's reset value (the `MSLUT` words, `PWMCONF`: shown, not written), or 0.
+- **In the tree:** `registers`, a keyed list (one node at rest: its elements are built per request), each register's name, address, access, value and decoded `fields` (`toff=3 hstrt=4 ...`), with a `write` action that takes the whole value. Writing needs an admin (`writeAccess`, TesserAPI §13.1), and `OTP_PROG` is never written: it burns the chip's fuses. Register writes aren't persisted. And `map`, a file node streaming the map as JSON (a register at a time: the TMC5160's is 14 KB), for a register editor that decodes and edits fields: a TesserUI element *(later)*, built against `fixtures/tmc5160_map.json` and `fixtures/tmc2209_map.json`.
+- **Cost,** computed from the tables (not yet measured, §10): about 5 KB of flash for the TMC5160's map (2.3 KB of names, 20 bytes a register, 8 a field) and 2 KB for the TMC2209's, linked with the driver, which goes through the table to read registers in turn. The driver's copy of the registers is 512 bytes of RAM.
+
 ## 5. Sequencer *(later)*
 
 A `Sequencer` plays keyframes: one or more **tracks**, each a list of frames `{t, value}` (t in ms from the start), interpolated linearly. It replaces three classes of the heliostat: `MovementSequencer` (one axis), `TargetSequencer` (a target's azimuth and elevation) and `SourceTargetSequencer` (four values). Those differ only in what they write to.
@@ -314,9 +352,18 @@ ESP-IDF refuses to link the legacy I2C driver (`driver/i2c.h`) and the new one (
 
 `UartPort` installs `uart_driver_install` with a 256-byte receive buffer on the port given (default UART 1), with no event queue. It refuses a port whose driver is already installed (Arduino's `Serial1`, if begun).
 
+- `write()` is `uart_write_bytes()`, false without a TX pin. Without a transmit buffer it returns once the bytes are in the hardware FIFO, which holds a TMC2209 datagram.
+- `read(buf, len, timeoutMs)` is `uart_read_bytes()`, which returns as soon as `len` bytes came. The timeout is at least one RTOS tick: `pdMS_TO_TICKS()` makes 0 of anything under 10 ms at ESP-IDF's default 100 Hz.
+
+### 7.4 SPI
+
+- `SpiBus` initializes its host (SPI2 unless given) with `spi_bus_initialize()`, DMA channel automatic, so other code may share the bus with long transfers. A host initialized already (`ESP_ERR_INVALID_STATE`: an Ethernet chip, another `SpiBus`) is shared, with a warning: its pins stand. `SpiBus(host)` shares one on purpose.
+- Devices are added on first use, by chip select, with their mode and clock, up to 3 (the hardware chip selects of a host on the ESP32).
+- Transfers are `spi_device_polling_transmit()`: a few bytes, done in microseconds; the driver arbitrates the bus with other devices' transfers. Arduino's `SPI` class drives the peripheral through its own HAL, not `spi_master`: give it another host than `SpiBus`'s. Arduino-ESP32 3.x's `ETH.begin()` takes a host and pins for an SPI Ethernet chip, through `spi_master`, which is how spin-seq's W5500 can share its TMC5160's bus.
+
 ## 8. Persistence
 
-Settings are persisted with TesserAPI's `.persist()` (TesserAPI §12): an axis's `tuning`, `limits`, `sensor/config`, `motor/config`, and its correction's `harmonics`, `points` and coefficients (`cos`, `sin`, read-only, restored when loading); a tilt's `samples` and its correction's `points`, `bias` and `scale` (read-only, restored when loading); later a sequencer's frames and `loop`. Status values (`position`, `state`, ...) aren't, and neither is `enabled`: axes boot disabled, and `stopAll()` disabling them is never half-saved. As TesserAPI loads leniently, a firmware with a renamed setting boots with its default. The limits and the target are in the raw frame (§4.3), so the order settings load in doesn't matter.
+Settings are persisted with TesserAPI's `.persist()` (TesserAPI §12): an axis's `tuning`, `limits`, `sensor/config`, `motor/config`, and its correction's `harmonics`, `points` and coefficients (`cos`, `sin`, read-only, restored when loading); a tilt's `samples` and its correction's `points`, `bias` and `scale` (read-only, restored when loading); a Trinamic driver's `config`, `chopper` and (TMC5160) `ramp`, but not its register writes (§4.8); later a sequencer's frames and `loop`. Status values (`position`, `state`, ...) aren't, and neither is `enabled`: axes and drivers boot disabled, and `stopAll()` disabling them is never half-saved. As TesserAPI loads leniently, a firmware with a renamed setting boots with its default. The limits and the target are in the raw frame (§4.3), so the order settings load in doesn't matter.
 
 ## 9. The trees
 
@@ -420,6 +467,36 @@ gps/                              NmeaGps
 
 Everything but the settings (`samples`, the correction's points, bias and scale) changes without a write, so it is watched (§9.1's rule).
 
+### 9.6 Trinamic drivers
+
+```
+stepper/                          Tmc5160 (a Tmc2209 has the same, without target, position, ramp)
+  enabled       boolean  (w)      the power stage; refused (not_allowed) while absent
+  velocity      number   (w)      µsteps/s, ±1 000 000; not_allowed unless enabled (and driving:
+                                  not a TMC5160 strapped for step and direction); deadman,
+                                  ui keepalive 400 ms
+  stop          action            velocity 0, positioning ended: the motor holds where it stops
+  target        integer  (w)      µsteps; not_allowed likewise
+  position      integer  (w)      µsteps, read-only, ui chart
+  status/       (w)               present, standstill, stealthChop, current (0..31), overtemperature,
+                                  overtemperatureWarning, shortToGround, shortToSupply, openLoad,
+                                  driverError, resets, errors
+  config/       (p), label "Driver settings"
+    runCurrent, holdCurrent       A, 0..the most the sense resistor allows
+    microsteps                    1..256, a power of 2 (else invalid_value)
+    interpolate, invert, stealthChop
+    stealthChopMax                steps/s, 0..10 000; visibleWhen stealthChop
+    deadman                       ms, 500..10 000
+  chopper/      (p), ui collapsed  toff 1..15, hstrt 0..7, hend 0..15, tbl 0..3
+  ramp/         (p), ui collapsed  maxSpeed (µsteps/s), acceleration (µsteps/s²)
+  registers     list              keyed by name, read-only, write access admin, ui collapsed:
+                                  {name, address, access (enum), value, fields (string), write
+                                  (action, the whole value; not_allowed for a read-only register)}
+  map           file              the register map, JSON (§4.8)
+```
+
+Not watched: the register list (its values change every tick; a list is one value, §4.4 of TesserAPI). The settings follow §9.1's rule.
+
 ### 9.4 Motion
 
 `describe(o, motion)` (the application mounts it where it likes, such as `/sys/motion` on TesserKIT): `period` (ms, watched), `tickMax` (µs, reset on read, so not watched), `overruns` (watched), and `stopAll` (an action with `ui.style "danger"`).
@@ -449,6 +526,7 @@ Measured as in TesserAPI §15 and TesserKIT §11: an example built with and with
 | The same with their trees | |
 | + two sequencers | |
 | + ADXL345, GPS | |
+| + a TMC5160 and a TMC2209, with their trees | |
 | RAM at rest, the task's stack included | |
 
 ## 11. Testing
@@ -464,7 +542,8 @@ Measured as in TesserAPI §15 and TesserKIT §11: an example built with and with
    - **Correction:** known harmonics recovered from points with any zero (±180 included); apply and remove inverse to 10⁻⁴°; a short arc corrected on the arc and small off it; weights (0 leaves out, twice equals weight 2, light points move it less); automatic harmonics; refusals leave the correction unchanged; coverage across 0°. In an axis on a plant with an off-centre magnet: targets reached within 0.2° after a calibration from 24 points; a fit while holding doesn't move the motor; references through an inverted sensor with an offset, and the zero to add.
    - **Drivers:** MT6701 register traffic on the fake bus, 0° as a valid reading, recovery after 3 failures; ADXL345 register traffic and scaling, an absent ADXL345 sharing a bus with an MT6701 (never read, never recovering the bus), `Tilt`'s averaging, loss and return; NMEA sentences (any talker, both hemispheres, bad checksums, missing checksums, malformed fields, partial and over-long lines, no fix, void RMC), `NmeaGps`'s fix, staleness and `takeTime()`. The sentences are standard examples; real captures from the heliostat's module go in `test/nmea/` once taken.
    - **Accelerometer correction:** bias and scale recovered from 14 noisy poses spread evenly, and exactly from a tumble's six; refusals (too few points, weights 0 included, not a number, far from 1 g, poses turned about y alone, z only up) leave the correction unchanged, and poses down to 30° below the horizon are enough; weight 0 leaves out a moved point that otherwise pulls the fit off; in a tilt: the correction applied to the average and to pitch, points uncorrected, refused without a sensor, before the average is full and while it holds two poses.
-   - **Trees:** requests through TesserAPI's handler (refusals, claims, settings, what is persisted), and golden schemas in `fixtures/*.json` (axis, motion, tilt, gps now; sequencer later) written by `tessermotion_fixtures`, as in TesserKIT §12, to be rendered in TesserUI's golden-model tests. They replace TesserUI's hand-written `motors` fixture (a gap report to TesserUI's agent).
+   - **Trinamic drivers** (`test/fake_tmc.*`: a TMC5160 behind its SPI datagrams, the read pipeline included, and a TMC2209 behind its UART datagrams with CRCs, an echo or none, and addresses): the generated maps (datasheet positions, the corrected errata, tables matching constants); `TmcField` sign extension and truncation; the configuration a `begin()` writes (sample configuration, current scaling on both chips, the ramp, `GSTAT` cleared, the enable pin), then nothing while nothing changes; absent, then found after 2 s; enabling (`TOFF`, the pin); velocities (units, the cap, `RAMPMODE` 2 for negative, `VACTUAL` two's complement, the deadman renewed and expiring); positioning (`RAMPMODE`, `VMAX`, `XTARGET` in that order; hold); step and direction refusals; a reset (counted once, reconfigured with the settings, disabled, the position from the chip); power lost and back; register writes (refused for read-only registers and `OTP_PROG`, unowned bits kept, owned ones following their setting, flags cleared, kept across a reset); every register read in turn; status flags; settings into registers; `stopAll()`; CRCs against TMC-API's; addresses on a shared UART.
+   - **Trees:** requests through TesserAPI's handler (refusals, claims, settings, what is persisted), and golden schemas in `fixtures/*.json` (axis, motion, tilt, gps, tmc5160, tmc2209 now, with the maps `tmc5160_map.json` and `tmc2209_map.json`; sequencer later) written by `tessermotion_fixtures`, as in TesserKIT §12, to be rendered in TesserUI's golden-model tests. They replace TesserUI's hand-written `motors` fixture (a gap report to TesserUI's agent).
 2. **On target:** `examples/idf/axis` (one axis on the heliostat's azimuth pins, the ADXL345 on its bus and the GPS, on TesserKIT for Wi-Fi and the interface; later a sequencer), driven by `test/e2e_motion.py` over HTTP and WebSocket: enable, move to targets and read back positions within tolerance, slew timing, limits, a sequence run, a sensor fault (unplugging is manual; the script asks), autotune, persistence across a restart. Motors move: see AGENTS.md before running it.
 3. **CI:** host tests, ESP-IDF builds (5.2, 5.4, 5.5, latest × ESP32, ESP32-C3, ESP32-S3), Arduino-ESP32 3.x builds of the examples.
 
@@ -477,21 +556,23 @@ TesserMotion/
   src/tessermotion/            drivers, controllers, *_tree.cpp
   src/tessermotion/platform/esp/
   examples/idf/axis/
-  examples/arduino/Axis/
+  examples/arduino/Axis/, examples/arduino/Stepper/
   fixtures/
+  tools/tmc_maps.py            generates src/tessermotion/tmc/ from TMC-API (§4.8)
   test/                        host tests, fake_hw, nmea captures, e2e_motion.py
   CMakeLists.txt, idf_component.yml, library.json, library.properties
 ```
 
 - ESP-IDF component and PlatformIO/Arduino library, like its siblings. Namespace `tessermotion`. TesserAPI is a hard dependency, found as TesserKIT finds it: any component name ending in `tesserapi`, and `TESSERAPI_DIR` (default `../TesserAPI`) or GitHub main for the host build.
-- `PRIV_REQUIRES`: `esp_driver_gpio`, `esp_driver_ledc`, `esp_driver_i2c`, `esp_driver_uart`, `esp_timer`. These are components of ESP-IDF itself, so a project that doesn't instantiate a part pays nothing for them.
+- `REQUIRES` `esp_driver_i2c` and `esp_driver_spi` (the bus headers include theirs), `PRIV_REQUIRES` `esp_driver_gpio`, `esp_driver_ledc`, `esp_driver_uart`, `esp_timer`. These are components of ESP-IDF itself, so a project that doesn't instantiate a part pays nothing for them.
 - MIT, semver, public at <https://github.com/leokeba/TesserMotion> once Leo creates it.
 
 ## 13. Later
 
 | Item | For |
 |---|---|
-| Steppers: a TMC5160 driver on `spi_master` (its ramp generator, without FastAccelStepper), `StepperAxis`, and an automatic calibration feeding §4.2's correction (steps as references, both directions to cancel backlash; it replaces spin-seq's 128-point linearization table) | spin-seq, TesserKIT phase 4 |
+| Steppers: `StepperAxis` (degrees, on a driver of §4.7, with an encoder for closed loop), a step generator for step and direction inputs (RMT or MCPWM; spin-seq drives its TMC5160 by step and direction, through FastAccelStepper), and an automatic calibration feeding §4.2's correction (steps as references, both directions to cancel backlash; it replaces spin-seq's 128-point linearization table) | spin-seq, TesserKIT phase 4 |
+| A TesserUI register editor for §4.8's maps: fields decoded and edited from `map` (a gap report to TesserUI's agent) | commissioning Trinamic drivers |
 | Multi-turn angle sensors (unwrapped position, turns) | continuous rotation axes |
 | Other encoders: AS5600 (I2C), AS5048A (SPI) | other mechanics |
 | A command sequencer (spin-seq's typed commands, TesserKIT §10.2) | spin-seq |

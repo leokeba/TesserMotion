@@ -46,6 +46,19 @@ size_t UartPort::read(uint8_t* buf, size_t max) {
     return n > 0 ? static_cast<size_t>(n) : 0;
 }
 
+size_t UartPort::read(uint8_t* buf, size_t len, uint32_t timeoutMs) {
+    if (!installed_ || len == 0) return 0;
+    // At least one RTOS tick: pdMS_TO_TICKS() rounds 1 ms down to 0 at 100 Hz.
+    TickType_t wait = pdMS_TO_TICKS(timeoutMs);
+    int n = uart_read_bytes(static_cast<uart_port_t>(config_.port), buf, static_cast<uint32_t>(len), wait > 0 ? wait : 1);
+    return n > 0 ? static_cast<size_t>(n) : 0;
+}
+
+bool UartPort::write(const uint8_t* buf, size_t len) {
+    if (!installed_ || config_.tx < 0) return false;
+    return uart_write_bytes(static_cast<uart_port_t>(config_.port), buf, len) == static_cast<int>(len);
+}
+
 }  // namespace tessermotion
 
 #endif

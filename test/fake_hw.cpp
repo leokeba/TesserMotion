@@ -57,6 +57,39 @@ size_t Uart::read(uint8_t* buf, size_t max) {
     return n;
 }
 
+bool Spi::transfer(const tessermotion::SpiDevice& device, const uint8_t* tx, uint8_t* rx, size_t len) {
+    transfers++;
+    last = device;
+    if (failNext > 0) {
+        failNext--;
+        return false;
+    }
+    auto d = devices.find(device.cs);
+    if (d == devices.end()) {
+        memset(rx, 0xFF, len);
+    } else {
+        d->second(tx, rx, len);
+    }
+    return true;
+}
+
+size_t Uart::read(uint8_t* buf, size_t len, uint32_t timeoutMs) {
+    (void)timeoutMs;
+    size_t n = 0;
+    while (n < len) {
+        size_t k = read(buf + n, len - n);
+        if (k == 0) break;
+        n += k;
+    }
+    return n;
+}
+
+bool Uart::write(const uint8_t* buf, size_t len) {
+    tx.append(reinterpret_cast<const char*>(buf), len);
+    if (onWrite) onWrite(buf, len);
+    return true;
+}
+
 void Task::tick(uint32_t durationUs) {
     now += periodUs;
     pendingDurationUs = durationUs;

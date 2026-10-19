@@ -1,5 +1,5 @@
 // The platform in memory (docs/DESIGN.md section 3.3), for host tests:
-// GPIO, PWM, I2C and UART fakes, a settable clock, and a control task that tests
+// GPIO, PWM, I2C, SPI and UART fakes, a settable clock, and a control task that tests
 // run by hand. Part of tessermotion_testing, for applications' tests too.
 #pragma once
 
@@ -74,19 +74,42 @@ struct I2c : tessermotion::I2c {
     }
 };
 
-// Bytes the test sends come out of read(), at most `chunk` per call.
+// Devices answer transfers by chip select: each is given what the bus sends
+// and writes what it answers. No device: MISO floats high.
+struct Spi : tessermotion::Spi {
+    using Device = std::function<void(const uint8_t* tx, uint8_t* rx, size_t len)>;
+    std::map<int, Device> devices;
+    int failNext = 0;
+    uint32_t begins = 0, transfers = 0;
+    tessermotion::SpiDevice last{-1};
+
+    bool begin() override {
+        begins++;
+        return true;
+    }
+    bool transfer(const tessermotion::SpiDevice& device, const uint8_t* tx, uint8_t* rx, size_t len) override;
+};
+
+// Bytes the test sends come out of read(), at most `chunk` per call. What
+// the driver writes goes to `tx`, and to `onWrite`, which may answer with
+// send().
 struct Uart : tessermotion::Uart {
     std::string rx;
     size_t pos = 0;
     size_t chunk = 64;
     bool ok = true;  // what begin() returns
     uint32_t begins = 0, reads = 0;
+    std::string tx;
+    std::function<void(const uint8_t* data, size_t len)> onWrite;
 
     bool begin() override {
         begins++;
         return ok;
     }
     size_t read(uint8_t* buf, size_t max) override;
+    // Doesn't wait: what has been sent is all there will be.
+    size_t read(uint8_t* buf, size_t len, uint32_t timeoutMs) override;
+    bool write(const uint8_t* buf, size_t len) override;
     void send(const std::string& bytes) { rx += bytes; }
 };
 
