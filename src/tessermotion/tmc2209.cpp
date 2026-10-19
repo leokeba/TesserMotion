@@ -162,10 +162,34 @@ void Tmc2209::rescale(float factor) { ramped_ *= factor; }
 
 void Tmc2209::adopt(float microstepsPerSecond) { ramped_ = microstepsPerSecond; }
 
-// VACTUAL can't be read: the speed from TSTEP (clock cycles between 1/256
-// microsteps), the direction from MSCNT (1/256 microsteps, modulo 1024)
-// across reads a millisecond or two apart, which must agree. Up to about
-// 1500 full steps/s, MSCNT moves less than half its turn between reads.
+namespace {
+
+// The direction MSCNT moved from `from` to `to` (1/256 microsteps, modulo
+// 1024), given that it moved about `expected` counts: +1, -1, or 0 when that
+// can't be told. Each direction's count is the step modulo 1024 plus whole
+// turns; the one nearer `expected` wins, if near enough and clearly nearer.
+int direction(uint32_t from, uint32_t to, float expected) {
+    float up = static_cast<float>((to - from) & 1023u);
+    float down = up == 0 ? 0 : 1024 - up;
+    auto miss = [expected](float count) {
+        float turns = floorf((expected - count) / 1024 + 0.5f);
+        if (turns < 0) turns = 0;
+        return fabsf(count + 1024 * turns - expected);
+    };
+    float missUp = miss(up), missDown = miss(down);
+    float near = expected * 0.3f > 48 ? expected * 0.3f : 48;
+    if (fabsf(missUp - missDown) < 128) return 0;
+    if (missUp < missDown) return missUp <= near ? 1 : 0;
+    return missDown <= near ? -1 : 0;
+}
+
+}  // namespace
+
+// VACTUAL can't be read: the speed comes from TSTEP (clock cycles between
+// 1/256 microsteps), the direction from MSCNT (1/256 microsteps, modulo
+// 1024) across three reads. The speed and the time between reads say how
+// far MSCNT moved, so a step past half its turn isn't taken for the other
+// way; both steps must agree.
 bool Tmc2209::measure(float& fullStepsPerSecond) {
     uint32_t tstep;
     {
@@ -173,16 +197,21 @@ bool Tmc2209::measure(float& fullStepsPerSecond) {
         tstep = static_cast<uint32_t>(get(t::tstep));
     }
     if (tstep == 0) return false;
-    uint32_t a, b, c;
-    if (!busRead(t::MSCNT, a) || !busRead(t::MSCNT, b) || !busRead(t::MSCNT, c)) return false;
-    auto delta = [](uint32_t from, uint32_t to) {
-        int32_t d = static_cast<int32_t>((to - from) & 1023u);
-        return d >= 512 ? d - 1024 : d;
-    };
-    int32_t d1 = delta(a & 1023u, b & 1023u), d2 = delta(b & 1023u, c & 1023u);
-    if (!((d1 > 0 && d2 > 0) || (d1 < 0 && d2 < 0))) return false;
     float speed = static_cast<float>(clockHz()) / (256.0f * static_cast<float>(tstep));
-    fullStepsPerSecond = d1 > 0 ? speed : -speed;
+    uint32_t count[3];
+    uint64_t at[3];
+    for (int i = 0; i < 3; i++) {
+        if (!busRead(t::MSCNT, count[i])) return false;
+        at[i] = nowUs();
+    }
+    int dir = 0;
+    for (int i = 0; i < 2; i++) {
+        float expected = 256.0f * speed * static_cast<float>(at[i + 1] - at[i]) * 1e-6f;
+        int d = direction(count[i], count[i + 1], expected);
+        if (d == 0 || (i > 0 && d != dir)) return false;
+        dir = d;
+    }
+    fullStepsPerSecond = dir > 0 ? speed : -speed;
     return true;
 }
 

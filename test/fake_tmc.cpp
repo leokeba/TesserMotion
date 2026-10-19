@@ -103,6 +103,7 @@ void Tmc2209::attach(Uart& uart) {
 }
 
 void Tmc2209::datagram(Uart& uart, const uint8_t* data, size_t len) {
+    fake::now += usPerDatagram;
     if (echo) uart.send(std::string(reinterpret_cast<const char*>(data), len));
     if (!powered || len < 4 || data[0] != 0x05 || data[1] != address) return;
     if (data[len - 1] != tessermotion::Tmc2209::crc(data, len - 1)) {

@@ -819,21 +819,24 @@ namespace {
 
 // A TMC2209 left turning by an ESP's reset: powered (no reset flag), its
 // stage on, VACTUAL running at 256 microsteps, TSTEP 108 (434 full steps/s,
-// Fluante's 116 rpm).
-void turning2209(fake::Tmc2209& c, int32_t mscntPerRead) {
+// Fluante's 116 rpm), its datagrams 1.1 ms apart. MSCNT then moves 122
+// counts between reads.
+void turning2209(fake::Tmc2209& c, int32_t mscntPerRead, uint32_t tstep = 108) {
     c.regs[r22::GSTAT] = 0;
     c.regs[r22::DRV_STATUS] = r22::cs_actual.set(0, 31);  // not at standstill
-    c.regs[r22::TSTEP] = 108;
+    c.regs[r22::TSTEP] = tstep;
     c.regs[r22::CHOPCONF] = r22::mres.set(0x10000053, 0);  // TOFF 3, 256
     c.mscntPerRead = mscntPerRead;
+    c.usPerDatagram = 1100;
 }
 
 }  // namespace
 
 TEST(tmc2209_resumes_after_esp_reset) {
     for (int32_t direction : {1, -1}) {
-        Rig2209 r(true, 0, 0, [direction](fake::Tmc2209& c) { turning2209(c, 140 * direction); });
+        Rig2209 r(true, 0, 0, [direction](fake::Tmc2209& c) { turning2209(c, 122 * direction); });
         CHECK(r.driver.status().found == TmcFound::Turning);
+        CHECK(r.driver.status().coasting == TmcCoast::None);
         CHECK(r.driver.enabled());
         // Never disabled: the pin driven low, TOFF kept.
         CHECK(r.gpio.isOutput[kEnablePin]);
@@ -854,6 +857,7 @@ TEST(tmc2209_resumes_after_esp_reset) {
         CHECK(v && chop && v < chop);
         // Then the deadman: not renewed, it stops (here without a ramp).
         r.chip.mscntPerRead = 0;
+        r.chip.usPerDatagram = 0;
         r.run(1.1f);
         CHECK_EQ(r.driver.velocity(), 0.0f);
         CHECK_EQ(r.chip.written[r22::VACTUAL], 0u);
@@ -861,10 +865,20 @@ TEST(tmc2209_resumes_after_esp_reset) {
     }
 }
 
+TEST(tmc2209_resumes_past_half_a_turn) {
+    // 2344 full steps/s: MSCNT moves 660 counts between reads, which modulo
+    // 1024 looks like 364 the other way; the speed tells them apart.
+    for (int32_t direction : {1, -1}) {
+        Rig2209 r(true, 0, 0, [direction](fake::Tmc2209& c) { turning2209(c, 660 * direction, 20); });
+        CHECK(r.driver.status().found == TmcFound::Turning);
+        CHECK(fabsf(r.driver.velocity() - 2343.75f * 16 * static_cast<float>(direction)) < 2);
+    }
+}
+
 TEST(tmc2209_does_not_resume) {
     // Reset (it lost power): stopped, as at boot.
     Rig2209 reset(true, 0, 0, [](fake::Tmc2209& c) {
-        turning2209(c, 140);
+        turning2209(c, 122);
         c.regs[r22::GSTAT] = 1;
     });
     CHECK(reset.driver.status().found == TmcFound::Stopped);
@@ -872,24 +886,35 @@ TEST(tmc2209_does_not_resume) {
     CHECK(reset.gpio.level[kEnablePin]);
     // Its stage off, or its enable pin high: the rotor coasts.
     Rig2209 off(true, 0, 0, [](fake::Tmc2209& c) {
-        turning2209(c, 140);
+        turning2209(c, 122);
         c.regs[r22::CHOPCONF] = r22::toff.set(c.regs[r22::CHOPCONF], 0);
     });
     CHECK(off.driver.status().found == TmcFound::Coasting);
+    CHECK(off.driver.status().coasting == TmcCoast::StageOff);
     CHECK(!off.driver.enabled());
     CHECK_EQ(off.written(r22::toff), 0u);
     Rig2209 pin(true, 0, 0, [](fake::Tmc2209& c) {
-        turning2209(c, 140);
+        turning2209(c, 122);
         c.regs[r22::IOIN] |= 1;  // ENN
     });
     CHECK(pin.driver.status().found == TmcFound::Coasting);
+    CHECK(pin.driver.status().coasting == TmcCoast::EnablePinHigh);
     // A direction that can't be told (MSCNT still, or past half its turn).
     Rig2209 still(true, 0, 0, [](fake::Tmc2209& c) { turning2209(c, 0); });
     CHECK(still.driver.status().found == TmcFound::Coasting);
+    CHECK(still.driver.status().coasting == TmcCoast::DirectionUnknown);
     CHECK(!still.driver.enabled());
+    // Near half MSCNT's turn between reads (1674 full steps/s, 471 counts):
+    // either way could be.
+    Rig2209 half(true, 0, 0, [](fake::Tmc2209& c) { turning2209(c, 471, 28); });
+    CHECK(half.driver.status().coasting == TmcCoast::DirectionUnknown);
+    // A count that doesn't match the speed.
+    Rig2209 odd(true, 0, 0, [](fake::Tmc2209& c) { turning2209(c, 300); });
+    CHECK(odd.driver.status().coasting == TmcCoast::DirectionUnknown);
     // At standstill: as before.
     Rig2209 stopped;
     CHECK(stopped.driver.status().found == TmcFound::Stopped);
+    CHECK(stopped.driver.status().coasting == TmcCoast::None);
 }
 
 TEST(tmc5160_resumes_after_esp_reset) {

@@ -200,6 +200,10 @@ void describeStatus(Object& o, TmcDriver& d) {
     s.value("found", [&d] { return d.status().found; }, {"stopped", "turning", "coasting"})
         .watch()
         .doc("What the last search found: turning through the ESP's reset (adopted, still enabled), or coasting (wait before enabling)");
+    s.value("coasting", [&d] { return d.status().coasting; },
+            {"none", "stageOff", "enablePinHigh", "stepDir", "directionUnknown"})
+        .watch()
+        .doc("Why the last search found the chip coasting");
 }
 
 void describeSettings(Object& o, TmcDriver& d) {

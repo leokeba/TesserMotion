@@ -45,6 +45,7 @@ struct Tmc2209 : TmcChip {
     uint8_t address = 0;
     bool echo = true;  // TX and RX on one wire: the requests come back
     int32_t mscntPerRead = 0;  // turning: MSCNT moves by this before each read of it
+    uint32_t usPerDatagram = 0;  // the clock moves by this for each datagram (115200 baud: about 1100)
     uint32_t badCrc = 0;
     Tmc2209() { powerOn(); }
     void powerOn() override;

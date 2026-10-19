@@ -100,21 +100,30 @@ bool TmcDriver::connect() {
     }
     // A chip that kept its power (no reset flag) and turns.
     TmcFound found = TmcFound::Stopped;
+    TmcCoast why = TmcCoast::None;
     float fullSteps = 0;
-    bool turning, on;
+    bool turning;
     {
         Guard g(lock());
         bool kept = get(common_.reset) == 0;
         bool moving = get(common_.stst) == 0 && get(common_.tstep) < 0xFFFFF;
-        on = get(common_.toff) != 0 && get(common_.enn) == 0 && drives();
         turning = kept && moving;
+        if (turning) {
+            why = get(common_.toff) == 0   ? TmcCoast::StageOff
+                  : get(common_.enn) != 0  ? TmcCoast::EnablePinHigh
+                  : !drives()              ? TmcCoast::StepDir
+                                           : TmcCoast::None;
+        }
     }
-    if (turning) found = on && measure(fullSteps) ? TmcFound::Turning : TmcFound::Coasting;
+    if (turning) {
+        if (why == TmcCoast::None && !measure(fullSteps)) why = TmcCoast::DirectionUnknown;
+        found = why == TmcCoast::None ? TmcFound::Turning : TmcFound::Coasting;
+    }
     Write writes[kMaxWrites + 2], clears[kMaxClears];
     size_t n, clearCount;
     {
         Guard g(lock());
-        configure(found, fullSteps);
+        configure(found, why, fullSteps);
         applySettings();
         n = take(writes, kMaxWrites, clears, clearCount);
         present_ = true;
@@ -126,7 +135,7 @@ bool TmcDriver::connect() {
     return true;
 }
 
-void TmcDriver::configure(TmcFound found, float fullStepsPerSecond) {
+void TmcDriver::configure(TmcFound found, TmcCoast why, float fullStepsPerSecond) {
     uint16_t chip = chipMicrosteps();
     for (size_t i = 0; i < map_.registerCount; i++) {
         const TmcRegisterInfo& r = map_.registers[i];
@@ -139,6 +148,7 @@ void TmcDriver::configure(TmcFound found, float fullStepsPerSecond) {
     clearCount_ = 0;
     clears_[clearCount_++] = {common_.reset.reg, kGstatFlags};
     status_.found = found;
+    status_.coasting = why;
     if (found == TmcFound::Turning) {
         // It goes on at the velocity it had, until the deadman: the
         // application renews it, or it stops (on the ramp, if any).

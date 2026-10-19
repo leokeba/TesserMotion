@@ -44,6 +44,15 @@ enum class TmcFound : uint8_t {
                // configured, disabled; wait for the rotor before enabling
 };
 
+// Why a search found the chip coasting.
+enum class TmcCoast : uint8_t {
+    None,
+    StageOff,          // TOFF 0
+    EnablePinHigh,     // IOIN reads the enable pin high
+    StepDir,           // a TMC5160 strapped for step and direction
+    DirectionUnknown,  // enabled and turning, but the direction couldn't be told
+};
+
 class TmcDriver : public Part {
 public:
     static constexpr uint8_t kAbsentAfter = 3;
@@ -97,6 +106,7 @@ public:
         uint32_t errors = 0;         // failed transfers since boot, searches for an absent chip included
         TmcError lastError = TmcError::None;  // why the last one failed
         TmcFound found = TmcFound::Stopped;   // what the last search found
+        TmcCoast coasting = TmcCoast::None;   // and why coasting
     };
 
     // The fields every chip has, from its map (for the chips' classes).
@@ -273,7 +283,7 @@ private:
     bool read(uint8_t address, uint64_t nowUs);
     // Under the lock: marks the registers a configuration writes; a chip
     // found turning is adopted at `fullStepsPerSecond`.
-    void configure(TmcFound found, float fullStepsPerSecond);
+    void configure(TmcFound found, TmcCoast why, float fullStepsPerSecond);
     void applySettings();
     // Under the lock: `settings.microsteps` into applied_, if it changed and
     // may.
