@@ -24,7 +24,9 @@ struct Tmc2209Config {
 class Tmc2209 : public TmcDriver {
 public:
     static constexpr uint8_t kVersion = 0x21;
-    // A reply comes within 1.1 ms at 115200 baud: this covers the RTOS tick.
+    // A reply comes within 1.1 ms at 115200 baud. The UART rounds the wait up
+    // to whole RTOS ticks, plus one: 20 ms at 100 Hz, only spent on a chip
+    // that doesn't answer.
     static constexpr uint32_t kTimeoutMs = 10;
 
     explicit Tmc2209(Uart& uart, const Tmc2209Config& config = Tmc2209Config(), Gpio* gpio = nullptr);

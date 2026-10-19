@@ -48,9 +48,12 @@ size_t UartPort::read(uint8_t* buf, size_t max) {
 
 size_t UartPort::read(uint8_t* buf, size_t len, uint32_t timeoutMs) {
     if (!installed_ || len == 0) return 0;
-    // At least one RTOS tick: pdMS_TO_TICKS() rounds 1 ms down to 0 at 100 Hz.
-    TickType_t wait = pdMS_TO_TICKS(timeoutMs);
-    int n = uart_read_bytes(static_cast<uart_port_t>(config_.port), buf, static_cast<uint32_t>(len), wait > 0 ? wait : 1);
+    // Rounded up, plus a tick: a wait of n ticks ends at the n-th tick
+    // interrupt, which may come at once. pdMS_TO_TICKS() rounds down, so at
+    // 100 Hz a 10 ms wait was 1 tick, anywhere from 0 to 10 ms, and a 1.1 ms
+    // TMC2209 reply straddling a tick timed out.
+    TickType_t wait = static_cast<TickType_t>((uint64_t(timeoutMs) * configTICK_RATE_HZ + 999) / 1000 + 1);
+    int n = uart_read_bytes(static_cast<uart_port_t>(config_.port), buf, static_cast<uint32_t>(len), wait);
     return n > 0 ? static_cast<size_t>(n) : 0;
 }
 
