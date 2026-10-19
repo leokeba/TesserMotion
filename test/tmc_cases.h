@@ -496,8 +496,13 @@ TEST(tree_tmc) {
     CHECK(r.set("/stepper/stop", "").status == tesser::Status::Ok);
     CHECK_EQ(r.get("/stepper/velocity").body, "0");
     // Settings.
-    CHECK(r.set("/stepper/config/microsteps", "12").status == tesser::Status::InvalidValue);
-    CHECK(r.set("/stepper/config/microsteps", "32").status == tesser::Status::Ok);
+    // A choice of powers of 2.
+    CHECK_EQ(r.get("/stepper/config/microsteps").body, "\"256\"");
+    CHECK(r.set("/stepper/config/microsteps", "\"12\"").status == tesser::Status::InvalidValue);
+    CHECK(r.set("/stepper/config/microsteps", "12").status != tesser::Status::Ok);
+    CHECK(r.set("/stepper/config/microsteps", "\"32\"").status == tesser::Status::Ok);
+    CHECK_EQ(r.get("/small/config/microsteps").body, "\"16\"");
+    CHECK(r.set("/small/config/microsteps", "\"1\"").status == tesser::Status::Ok);
     CHECK(r.set("/stepper/config/runCurrent", "4").status == tesser::Status::InvalidValue);  // over 3.06 A
     CHECK(r.set("/stepper/chopper/toff", "5").status == tesser::Status::Ok);
     r.tick();
@@ -714,4 +719,93 @@ TEST(tree_tmc_claim) {
     r.small.release();
     CHECK(r.set("/small/stop", "").status == tesser::Status::Ok);
     CHECK_EQ(r.get("/small/velocity").body, "0");
+}
+
+TEST(tmc2209_microsteps_keep_speed) {
+    // Fluante's case: turning at 60 rpm of its sculpture, renewed every tick
+    // at the resolution in effect, then microsteps changed from the tree.
+    for (uint16_t to : {16, 1}) {
+        Rig2209 r;
+        r.driver.settings.microsteps = 256;
+        r.driver.ramp.acceleration = 50000;
+        r.driver.enable(true);
+        auto renew = [&r] {
+            // 0.9 sculpture turns a motor turn, 200 steps.
+            CHECK(r.driver.setVelocity(60.0f / 60.0f / 0.9f * 200 * r.driver.microsteps()));
+            r.tick();
+        };
+        for (int i = 0; i < 100; i++) renew();
+        float fullSteps = r.driver.actualVelocity() / 256;
+        CHECK(fabsf(fullSteps - 222.2f) < 0.1f);
+        r.chip.writes.clear();
+        r.driver.settings.microsteps = to;
+        renew();
+        CHECK_EQ(r.driver.microsteps(), to);
+        // The same speed in full steps, at once, in the chip's units too.
+        CHECK(fabsf(r.driver.actualVelocity() / to - fullSteps) < 0.1f);
+        float vactual = static_cast<float>(r22::vactual.get(r.chip.written[r22::VACTUAL]));
+        CHECK(fabsf(vactual * 12e6f / 16777216.0f / to - fullSteps) < 1.0f);
+        CHECK_EQ(r.written(r22::mres), to == 16 ? 4u : 8u);
+        // Slower first: the new velocity, then the coarser resolution.
+        CHECK(r.chip.writes.size() >= 2);
+        CHECK_EQ(r.chip.writes[0], r22::VACTUAL);
+        CHECK_EQ(r.chip.writes[1], r22::CHOPCONF);
+        for (int i = 0; i < 20; i++) renew();
+        CHECK(fabsf(r.driver.actualVelocity() / to - fullSteps) < 0.1f);
+        // And back: the finer resolution first.
+        r.chip.writes.clear();
+        r.driver.settings.microsteps = 256;
+        renew();
+        CHECK_EQ(r.chip.writes[0], r22::CHOPCONF);
+        CHECK_EQ(r.chip.writes[1], r22::VACTUAL);
+        CHECK(fabsf(r.driver.actualVelocity() / 256 - fullSteps) < 0.1f);
+    }
+}
+
+TEST(tmc5160_microsteps_at_standstill) {
+    Rig5160 r;
+    r.driver.enable(true);
+    r.tick();
+    CHECK(r.driver.setVelocity(51200));
+    r.chip.regs[r51::VACTUAL] = 71583;  // turning
+    r.tick();
+    r.driver.settings.microsteps = 16;
+    r.tick(3);
+    CHECK_EQ(r.driver.microsteps(), 256);
+    CHECK_EQ(r.written(r51::mres), 0u);
+    CHECK_EQ(r.written(r51::vmax), 71583u);
+    // Stopped: applied, and the velocity kept in full steps.
+    r.chip.regs[r51::VACTUAL] = 0;
+    r.tick();
+    CHECK(r.driver.setVelocity(r.driver.velocity()));
+    r.tick();
+    CHECK_EQ(r.driver.microsteps(), 16);
+    CHECK_EQ(r.written(r51::mres), 4u);
+    CHECK_EQ(r.driver.velocity(), 3200.0f);
+    CHECK_EQ(r.written(r51::vmax), 4474u);  // 3200 · 2^24 / 12 MHz
+    // Counts between powers of 2 take the lower.
+    r.driver.settings.microsteps = 100;
+    r.tick();
+    CHECK_EQ(r.driver.microsteps(), 64);
+}
+
+TEST(tmc2209_set_microsteps_at_once) {
+    // An application computing its velocity from the setting, as Fluante's
+    // spinner first did: through setMicrosteps(), no tick at the wrong speed.
+    Rig2209 r;
+    r.driver.settings.microsteps = 256;
+    r.driver.enable(true);
+    auto renew = [&r] {
+        CHECK(r.driver.setVelocity(222.2f * r.driver.settings.microsteps));
+        r.tick();
+    };
+    for (int i = 0; i < 5; i++) renew();
+    r.driver.setMicrosteps(16);
+    CHECK_EQ(r.driver.microsteps(), 16);
+    CHECK(fabsf(r.driver.velocity() - 222.2f * 16) < 1);
+    for (int i = 0; i < 3; i++) {
+        renew();
+        float vactual = static_cast<float>(r22::vactual.get(r.chip.written[r22::VACTUAL]));
+        CHECK(fabsf(vactual * 12e6f / 16777216.0f / 16 - 222.2f) < 1.0f);
+    }
 }

@@ -5,8 +5,9 @@
 // step and direction (SD_MODE high), it only drives: the steps come from
 // elsewhere, and setTarget() and setVelocity() are refused.
 //
-// Positions count microsteps at the configured resolution (XACTUAL's unit),
-// from wherever the chip started.
+// Positions count microsteps at the resolution in effect (XACTUAL's unit),
+// from wherever the chip started. A change of microsteps is applied at
+// standstill: the ramp generator's own velocity can't be rescaled.
 
 #include <stdint.h>
 
@@ -59,6 +60,10 @@ protected:
     void applyMotion() override;
     bool drives() const override;
     float measuredVelocity() const override;
+    uint8_t velocityRegister() const override;
+    // Only at standstill: the ramp generator's own velocity can't be
+    // rescaled.
+    bool canChangeResolution() const override;
 
 private:
     bool transfer(uint8_t first, uint32_t data, uint32_t& reply);

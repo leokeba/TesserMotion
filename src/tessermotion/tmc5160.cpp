@@ -85,6 +85,10 @@ size_t Tmc5160::fastRegisters(const uint8_t*& list) const {
 
 bool Tmc5160::drives() const { return get(t::sd_mode) == 0; }
 
+uint8_t Tmc5160::velocityRegister() const { return t::VMAX; }
+
+bool Tmc5160::canChangeResolution() const { return !drives() || get(t::vactual) == 0; }
+
 float Tmc5160::measuredVelocity() const {
     return static_cast<float>(get(t::vactual)) * static_cast<float>(clockHz()) / 16777216.0f;
 }

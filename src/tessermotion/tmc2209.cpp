@@ -156,6 +156,10 @@ void Tmc2209::applyMotion() {
     set(t::vactual, static_cast<int32_t>(lroundf(v)));
 }
 
+uint8_t Tmc2209::velocityRegister() const { return t::VACTUAL; }
+
+void Tmc2209::rescale(float factor) { ramped_ *= factor; }
+
 float Tmc2209::measuredVelocity() const { return ramp.acceleration > 0 && enabled_ ? ramped_ : target(); }
 
 }  // namespace tessermotion

@@ -33,6 +33,16 @@ std::vector<uint8_t>& rows(const TmcMap& map) {
 
 const char* const kAccessNames[] = {"read", "write", "readWrite", "readClear"};
 
+// Microsteps per full step, a power of 2 from 1 to 256: an enum whose value
+// is the exponent, so the tree offers the choices the chip has.
+enum class Microsteps : uint8_t { M1, M2, M4, M8, M16, M32, M64, M128, M256 };
+
+Microsteps toChoice(uint16_t microsteps) {
+    uint8_t e = 0;
+    while (e < 8 && (2u << e) <= microsteps) e++;
+    return static_cast<Microsteps>(e);
+}
+
 // "toff=3 hstrt=4 ...": a register's fields in its value.
 std::string decode(const TmcMap& map, const TmcRegisterInfo& r, uint32_t value) {
     std::string s;
@@ -204,16 +214,12 @@ void describeSettings(Object& o, TmcDriver& d) {
          "microsteps",
          [&d, &s] {
              Guard g(d.lock());
-             return s.microsteps;
+             return toChoice(s.microsteps);
          },
-         [&d, &s](uint16_t m) -> Check {
-             if (m == 0 || (m & (m - 1)) != 0) return Check::fail(Status::InvalidValue, "a power of 2 from 1 to 256");
-             Guard g(d.lock());
-             s.microsteps = m;
-             return Check::ok();
-         })
-        .range(1, 256)
-        .doc("Per full step, a power of 2");
+         [&d](Microsteps m) { d.setMicrosteps(static_cast<uint16_t>(1u << static_cast<uint8_t>(m))); },
+         {"1", "2", "4", "8", "16", "32", "64", "128", "256"})
+        .ui("labels", "1 (full steps),2,4,8,16,32,64,128,256")
+        .doc("Per full step. A change keeps the motor's speed: a TMC5160 applies it at standstill");
     setting(c, "interpolate", d, s.interpolate).doc("The chip interpolates to 256 microsteps");
     setting(c, "invert", d, s.invert).doc("Turns the other way");
     setting(c, "stealthChop", d, s.stealthChop).doc("The quiet chopper; off: spreadCycle");

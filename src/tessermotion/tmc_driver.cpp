@@ -7,11 +7,18 @@ namespace tessermotion {
 
 namespace {
 
-// MRES: 256 microsteps is 0, a full step 8; a count between powers of 2
-// takes the lower.
+// A count of microsteps as one the chip has: a power of 2 from 1 to 256,
+// the lower one between two.
+uint16_t powerOfTwo(uint16_t microsteps) {
+    uint16_t m = 1;
+    while (m < 256 && m * 2 <= microsteps) m = static_cast<uint16_t>(m * 2);
+    return m;
+}
+
+// MRES: 256 microsteps is 0, a full step 8.
 int32_t microstepResolution(uint16_t microsteps) {
     int32_t mres = 8;
-    for (uint32_t m = 2; m <= 256 && m <= microsteps; m *= 2) mres--;
+    for (uint32_t m = 2; m <= microsteps; m *= 2) mres--;
     return mres;
 }
 
@@ -84,7 +91,7 @@ bool TmcDriver::connect() {
         Guard g(lock());
         shadow_[r.address & 0x7F] = v;
     }
-    Write writes[kMaxWrites], clears[kMaxClears];
+    Write writes[kMaxWrites + 2], clears[kMaxClears];
     size_t n, clearCount;
     {
         Guard g(lock());
@@ -120,7 +127,8 @@ void TmcDriver::configure() {
 
 void TmcDriver::applySettings() {
     const Settings& s = settings;
-    set(common_.mres, microstepResolution(s.microsteps));
+    applyResolution();
+    set(common_.mres, microstepResolution(applied_));
     set(common_.intpol, s.interpolate);
     set(common_.shaft, s.invert);
     // TOFF 0 turns the power stage off.
@@ -148,6 +156,23 @@ void TmcDriver::applySettings() {
     applyMotion();
 }
 
+void TmcDriver::applyResolution() {
+    // A new resolution keeps the motor's speed: the velocities in microsteps
+    // are scaled to it, and written with it.
+    uint16_t want = powerOfTwo(settings.microsteps);
+    if (want == applied_ || !canChangeResolution()) return;
+    float factor = static_cast<float>(want) / static_cast<float>(applied_);
+    velocity_ *= factor;
+    rescale(factor);
+    applied_ = want;
+    set(common_.mres, microstepResolution(applied_));
+    applyMotion();
+    // Between the two writes the motor goes slower, never faster.
+    ordered_[0] = factor > 1 ? common_.mres.reg : velocityRegister();
+    ordered_[1] = factor > 1 ? velocityRegister() : common_.mres.reg;
+    orderedCount_ = 2;
+}
+
 void TmcDriver::put(uint8_t address, uint32_t value) {
     address &= 0x7F;
     if (shadow_[address] == value) return;
@@ -157,7 +182,17 @@ void TmcDriver::put(uint8_t address, uint32_t value) {
 
 size_t TmcDriver::take(Write* out, size_t max, Write* clears, size_t& clearCount) {
     size_t n = 0;
-    // In increasing addresses: a TMC5160's RAMPMODE before VMAX before
+    // The ordered ones first, on top of `max`.
+    for (size_t i = 0; i < orderedCount_; i++) {
+        uint8_t a = ordered_[i] & 0x7F;
+        if (!isSet(pending_, a)) continue;
+        unmark(pending_, a);
+        mark(dirty_, a);
+        out[n++] = {a, shadow_[a]};
+    }
+    orderedCount_ = 0;
+    max += n;
+    // Then in increasing addresses: a TMC5160's RAMPMODE before VMAX before
     // XTARGET.
     for (uint8_t a = 0; a < 128 && n < max; a++) {
         if (!isSet(pending_, a)) continue;
@@ -225,7 +260,7 @@ void TmcDriver::sense(uint64_t nowUs) {
         if (!connect()) failed(nowUs);
         return;
     }
-    Write writes[kMaxWrites], clears[kMaxClears];
+    Write writes[kMaxWrites + 2], clears[kMaxClears];
     size_t n, clearCount;
     bool on;
     {
@@ -372,6 +407,17 @@ void TmcDriver::release() {
 std::string TmcDriver::owner() {
     Guard g(lock());
     return owner_;
+}
+
+void TmcDriver::setMicrosteps(uint16_t microsteps) {
+    Guard g(lock());
+    settings.microsteps = microsteps;
+    applyResolution();
+}
+
+uint16_t TmcDriver::microsteps() {
+    Guard g(lock());
+    return applied_;
 }
 
 float TmcDriver::runAmps() const { return override_ > 0 ? override_ : settings.runCurrent; }

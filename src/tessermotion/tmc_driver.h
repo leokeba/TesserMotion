@@ -126,6 +126,15 @@ public:
     // settings: until overrideCurrent(0). Not stored.
     void overrideCurrent(float amps);
     float currentOverride();  // 0: none
+    // The microsteps in effect: `settings.microsteps` once applied (a power
+    // of 2, the lower one between two). Velocities and positions count these:
+    // compute them from this, not from the setting.
+    uint16_t microsteps();
+    // Sets `settings.microsteps` and applies it at once, the velocities
+    // rescaled so the motor keeps its speed (a TMC5160: at standstill, else
+    // once it stops). The tree uses it; a change written to the setting
+    // directly is applied on the next tick.
+    void setMicrosteps(uint16_t microsteps);
     // An owner (an application's part) drives the motor: until release(),
     // the tree refuses writes to enabled, velocity, stop and target with
     // `busy`, "driven by <owner>". Code isn't refused.
@@ -158,7 +167,13 @@ protected:
 
     TmcDriver(const TmcMap& map, const Common& common, uint16_t microsteps, const Pwm& pwmDefaults, uint32_t clockHz,
               int enablePin, Gpio* gpio)
-        : pwm(pwmDefaults), map_(map), common_(common), clockHz_(clockHz), enablePin_(enablePin), gpio_(gpio) {
+        : pwm(pwmDefaults),
+          map_(map),
+          common_(common),
+          clockHz_(clockHz),
+          enablePin_(enablePin),
+          gpio_(gpio),
+          applied_(microsteps) {
         settings.microsteps = microsteps;
     }
 
@@ -181,6 +196,13 @@ protected:
     virtual void advance(float seconds) { (void)seconds; }
     // Under the lock: the velocity now, µsteps/s.
     virtual float measuredVelocity() const = 0;
+    // The register the chip's velocity is written to (VACTUAL, VMAX).
+    virtual uint8_t velocityRegister() const = 0;
+    // Under the lock: whether a new microstep resolution may be applied now,
+    // and the chip's own velocities scaled to it, by `factor` (new/old), so
+    // the motor keeps its speed.
+    virtual bool canChangeResolution() const { return true; }
+    virtual void rescale(float factor) { (void)factor; }
 
     // The register copy, under the lock.
     uint32_t reg(uint8_t address) const { return shadow_[address & 0x7F]; }
@@ -230,7 +252,11 @@ private:
     // Under the lock: marks the registers a configuration writes.
     void configure();
     void applySettings();
-    // Under the lock: up to `max` recorded writes, taken.
+    // Under the lock: `settings.microsteps` into applied_, if it changed and
+    // may.
+    void applyResolution();
+    // Under the lock: up to `max` recorded writes, taken, and the ordered
+    // ones (2 at most) on top: `out` holds max + 2.
     size_t take(Write* out, size_t max, Write* clears, size_t& clearCount);
     // Control task: makes the writes; false if any failed.
     void flush(const Write* writes, size_t n, const Write* clears, size_t clearCount);
@@ -265,6 +291,11 @@ private:
     bool present_ = false;
     float override_ = 0;
     std::string owner_;
+    uint16_t applied_;  // microsteps in MRES
+    // Written first, in this order, past the tick's limit: a new resolution
+    // and the velocity in it, the slower first.
+    uint8_t ordered_[2] = {};
+    size_t orderedCount_ = 0;
     bool velocityWritten_ = false;
     uint64_t velocitySinceUs_ = 0;
     Status status_;

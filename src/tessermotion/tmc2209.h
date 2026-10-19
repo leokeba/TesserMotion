@@ -58,6 +58,8 @@ protected:
     void applyMotion() override;
     void advance(float seconds) override;
     float measuredVelocity() const override;
+    uint8_t velocityRegister() const override;
+    void rescale(float factor) override;
 
 private:
     void drain();
