@@ -109,10 +109,23 @@ private:
     size_t pos_ = 0;
 };
 
+// Refuses a tree write to a claimed driver, naming the owner. The message
+// must outlive the call: requests run under the API lock, so one buffer
+// serves every driver.
+Check claimed(TmcDriver& d) {
+    static std::string busy;
+    std::string owner = d.owner();
+    if (owner.empty()) return Check::ok();
+    busy = "driven by " + owner;
+    return Check::fail(Status::Busy, busy.c_str());
+}
+
 void describeControls(Object& o, TmcDriver& d) {
     o.value(
          "enabled", [&d] { return d.enabled(); },
          [&d](bool on) -> Check {
+             Check c = claimed(d);
+             if (!c.isOk()) return c;
              if (on && !d.present()) return Check::fail(Status::NotAllowed, "the driver doesn't answer");
              d.enable(on);
              return Check::ok();
@@ -122,6 +135,8 @@ void describeControls(Object& o, TmcDriver& d) {
     o.value(
          "velocity", [&d] { return d.velocity(); },
          [&d](float v) -> Check {
+             Check c = claimed(d);
+             if (!c.isOk()) return c;
              if (d.setVelocity(v)) return Check::ok();
              return Check::fail(Status::NotAllowed,
                                 d.enabled() ? "the steps come from the STEP input" : "the driver is disabled");
@@ -131,7 +146,19 @@ void describeControls(Object& o, TmcDriver& d) {
         .watch()
         .ui("keepalive", 400)  // the client renews it well within the deadman (500 ms or more)
         .doc("Turns the motor, for the deadman time unless rewritten");
-    o.action("stop", [&d] { d.hold(); }).doc("Stops the motor, which holds where it stopped").ui("icon", "stop");
+    o.action("stop",
+             [&d]() -> Check {
+                 Check c = claimed(d);
+                 if (c.isOk()) d.hold();
+                 return c;
+             })
+        .doc("Stops the motor, which holds where it stopped")
+        .ui("icon", "stop");
+    o.value("actualVelocity", [&d] { return d.actualVelocity(); })
+        .unit("µsteps/s")
+        .watch()
+        .ui("widget", "chart")
+        .doc("The velocity now: the TMC5160's, or the TMC2209's ramp");
 }
 
 void describeStatus(Object& o, TmcDriver& d) {
@@ -149,8 +176,17 @@ void describeStatus(Object& o, TmcDriver& d) {
     s.value("shortToSupply", flag(&TmcDriver::Status::shortToSupply)).watch();
     s.value("openLoad", flag(&TmcDriver::Status::openLoad)).watch().doc("Unreliable at standstill and at speed");
     s.value("driverError", flag(&TmcDriver::Status::driverError)).watch().doc("The power stage shut down");
+    s.value("stallGuard", [&d] { return d.status().stallGuard; })
+        .watch()
+        .doc("SG_RESULT: lower is more load (TMC2209: read in turn)");
     s.value("resets", [&d] { return d.status().resets; }).watch().doc("Times the chip lost power since boot");
-    s.value("errors", [&d] { return d.status().errors; }).watch().doc("Failed transfers since boot");
+    s.value("errors", [&d] { return d.status().errors; })
+        .watch()
+        .doc("Failed transfers since boot, searches for an absent chip included");
+    s.value("lastError", [&d] { return d.status().lastError; },
+            {"none", "bus", "noReply", "echoOnly", "badReply", "wrongVersion"})
+        .watch()
+        .doc("Why the last failed transfer failed");
 }
 
 void describeSettings(Object& o, TmcDriver& d) {
@@ -194,6 +230,19 @@ void describeSettings(Object& o, TmcDriver& d) {
     setting(chopper, "hstrt", d, ch.hstrt).range(0, 7).doc("Hysteresis start");
     setting(chopper, "hend", d, ch.hend).range(0, 15).doc("Hysteresis end: −3..12");
     setting(chopper, "tbl", d, ch.tbl).range(0, 3).doc("Blank time");
+
+    TmcDriver::Pwm& p = d.pwm;
+    auto& pwm = o.object("pwm").persist().label("stealthChop PWM").ui("collapsed").doc("PWMCONF, in the datasheet's units");
+    setting(pwm, "ofs", d, p.ofs).doc("Amplitude offset: autoscale's start, at standstill");
+    setting(pwm, "grad", d, p.grad).doc("Amplitude gradient with speed: autoscale's start");
+    setting(pwm, "freq", d, p.freq).range(0, 3).doc("2/1024, 2/683, 2/512, 2/410 of the clock");
+    setting(pwm, "autoscale", d, p.autoscale).doc("Regulates the amplitude to the current");
+    setting(pwm, "autograd", d, p.autograd).doc("And the gradient");
+    setting(pwm, "freewheel", d, p.freewheel)
+        .range(0, 3)
+        .doc("At standstill with a hold current of 0: normal, free, coils shorted low or high");
+    setting(pwm, "reg", d, p.reg).range(1, 15).doc("autoscale's regulation loop gradient");
+    setting(pwm, "lim", d, p.lim).range(0, 15).doc("autoscale's limit when switching from spreadCycle");
 }
 
 void describeRegisters(Object& o, TmcDriver& d) {
@@ -243,6 +292,8 @@ void describe(Object& o, Tmc5160& d) {
     o.value(
          "target", [&d] { return d.target(); },
          [&d](int32_t microsteps) -> Check {
+             Check c = claimed(d);
+             if (!c.isOk()) return c;
              if (d.setTarget(microsteps)) return Check::ok();
              return Check::fail(Status::NotAllowed,
                                 d.enabled() ? "the steps come from the STEP input" : "the driver is disabled");
@@ -263,6 +314,11 @@ void describe(Object& o, Tmc2209& d) {
     describeControls(o, d);
     describeStatus(o, d);
     describeSettings(o, d);
+    auto& ramp = o.object("ramp").persist().label("Ramp").ui("collapsed");
+    setting(ramp, "acceleration", d, d.ramp.acceleration)
+        .range(0, 4000000)
+        .unit("µsteps/s²")
+        .doc("Up and down, also to a stop; 0: velocities jump");
     describeRegisters(o, d);
 }
 

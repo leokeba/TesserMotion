@@ -48,6 +48,16 @@ FIXES = {
     },
 }
 
+# Fields TMC-API doesn't give, by chip and register: (name, shift, width,
+# signed) from the datasheet.
+ADDS = {
+    "TMC2209": {
+        "TCOOLTHRS": [("tcoolthrs", 0, 20, False)],
+        "SGTHRS": [("sgthrs", 0, 8, False)],
+        "SG_RESULT": [("sg_result", 0, 10, False)],
+    },
+}
+
 # Fields left out, by chip: TMC-API's second names for the same bits.
 DROPS = {
     "TMC5160": {"TFD_ALL", "TFD_3"},  # tfd, fd3
@@ -162,6 +172,13 @@ def parse(root, chip):
         seen[key] = (shift, width)
         names.setdefault(address, reg_name)
         fields.setdefault(address, []).append((name, shift, width, signed == "true"))
+
+    for reg_name, adds in ADDS.get(chip, {}).items():
+        address = defines[reg_name]
+        if fields.get(address):
+            fail(f"{chip}: {reg_name} has fields now: drop it from ADDS")
+        names.setdefault(address, reg_name)
+        fields[address] = list(adds)
 
     # Registers TMC-API gives an access but no field (MSLUT words, X_COMPARE,
     # and so on): named by their address's define.

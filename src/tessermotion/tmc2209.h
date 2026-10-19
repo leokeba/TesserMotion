@@ -7,6 +7,10 @@
 // Wiring: the ESP's TX through 1 kΩ to PDN_UART, its RX straight to it; the
 // driver tells the request's echo from the reply, and works without one.
 // Up to four share a UART, at the addresses their MS1 and MS2 pins set.
+//
+// VACTUAL has no ramp of its own: with an acceleration, the driver ramps it
+// every tick, towards a velocity and back to 0 on hold() or the deadman;
+// without, it jumps, which can stall a loaded motor.
 
 #include <stdint.h>
 
@@ -29,7 +33,14 @@ public:
     // that doesn't answer.
     static constexpr uint32_t kTimeoutMs = 10;
 
+    struct Ramp {
+        float acceleration = 0;  // µsteps/s², up and down; 0: jumps
+    };
+
     explicit Tmc2209(Uart& uart, const Tmc2209Config& config = Tmc2209Config(), Gpio* gpio = nullptr);
+
+    // Set before Motion starts, or under lock() afterwards (the tree does).
+    Ramp ramp;
 
     float maxCurrent() const override;
 
@@ -45,13 +56,17 @@ protected:
     size_t writesPerTick() const override { return 4; }
     void applyChip() override;
     void applyMotion() override;
+    void advance(float seconds) override;
+    float measuredVelocity() const override;
 
 private:
     void drain();
+    float target() const;  // under the lock: where the ramp goes
 
     Uart& uart_;
     const Tmc2209Config config_;
     bool echo_ = false;  // the line sends our datagrams back; learned on each read
+    float ramped_ = 0;   // µsteps/s, under the lock
 };
 
 }  // namespace tessermotion

@@ -14,10 +14,16 @@ constexpr TmcDriver::Common kCommon = {
     t::version, Tmc5160::kVersion, t::reset, t::drv_err, t::shaft, t::tpwmthrs,
     t::toff, t::hstrt, t::hend, t::tbl, t::mres, t::intpol,
     t::stst, t::stealth, t::cs_actual, t::ot, t::otpw, t::s2ga, t::s2gb, t::s2vsa, t::s2vsb, t::ola, t::olb,
+    t::sg_result,
+    t::pwm_ofs, t::pwm_grad, t::pwm_freq, t::pwm_autoscale, t::pwm_autograd, t::freewheel, t::pwm_reg, t::pwm_lim,
 };
 
-// Read every tick: faults and resets, the driver's state, the position.
-constexpr uint8_t kFast[] = {t::GSTAT, t::DRV_STATUS, t::XACTUAL};
+// PWMCONF's reset value, 0xC40C001E.
+constexpr TmcDriver::Pwm kPwm = {30, 0, 0, true, true, 0, 4, 12};
+
+// Read every tick: faults and resets, the driver's state, the position and
+// the velocity.
+constexpr uint8_t kFast[] = {t::GSTAT, t::DRV_STATUS, t::XACTUAL, t::VACTUAL};
 
 constexpr float kFullScaleVolts = 0.325f;  // across the sense resistor at GLOBAL_SCALER 256, CS 31
 constexpr float kVmax = 8388096;           // 2^23 − 512
@@ -31,7 +37,7 @@ int32_t rounded(float v, float hi) {
 }  // namespace
 
 Tmc5160::Tmc5160(Spi& bus, const Tmc5160Config& config, Gpio* gpio)
-    : TmcDriver(t::kMap, kCommon, 256, config.clockHz, config.enable, gpio),
+    : TmcDriver(t::kMap, kCommon, 256, kPwm, config.clockHz, config.enable, gpio),
       bus_(bus),
       config_(config),
       device_{config.cs, 3, config.spiHz} {}
@@ -47,10 +53,17 @@ bool Tmc5160::transfer(uint8_t first, uint32_t data, uint32_t& reply) {
     uint8_t tx[5] = {first, static_cast<uint8_t>(data >> 24), static_cast<uint8_t>(data >> 16),
                      static_cast<uint8_t>(data >> 8), static_cast<uint8_t>(data)};
     uint8_t rx[5] = {};
-    if (!bus_.transfer(device_, tx, rx, sizeof tx)) return false;
+    if (!bus_.transfer(device_, tx, rx, sizeof tx)) {
+        busError_ = TmcError::Bus;
+        return false;
+    }
     reply = (uint32_t(rx[1]) << 24) | (uint32_t(rx[2]) << 16) | (uint32_t(rx[3]) << 8) | rx[4];
     // A floating or missing MISO.
-    return !(rx[0] == 0xFF && reply == 0xFFFFFFFFu);
+    if (rx[0] == 0xFF && reply == 0xFFFFFFFFu) {
+        busError_ = TmcError::NoReply;
+        return false;
+    }
+    return true;
 }
 
 bool Tmc5160::busRead(uint8_t address, uint32_t& value) {
@@ -72,11 +85,15 @@ size_t Tmc5160::fastRegisters(const uint8_t*& list) const {
 
 bool Tmc5160::drives() const { return get(t::sd_mode) == 0; }
 
+float Tmc5160::measuredVelocity() const {
+    return static_cast<float>(get(t::vactual)) * static_cast<float>(clockHz()) / 16777216.0f;
+}
+
 void Tmc5160::applyChip() {
     // I = GLOBAL_SCALER/256 · (CS + 1)/32 · 0.325 V / R / √2. The scaler
     // takes the current, CS 31 at the run current: its 1..31 aren't allowed.
-    float run = settings.runCurrent;
-    float hold = settings.holdCurrent < run ? settings.holdCurrent : run;
+    float run = runAmps();
+    float hold = holdAmps();
     float full = 256.0f * run * 1.41421356f * config_.rSense / kFullScaleVolts;
     int32_t scaler = static_cast<int32_t>(ceilf(full));
     scaler = scaler < 32 ? 32 : scaler > 256 ? 256 : scaler;

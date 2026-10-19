@@ -58,6 +58,7 @@ protected:
     void applyChip() override;
     void applyMotion() override;
     bool drives() const override;
+    float measuredVelocity() const override;
 
 private:
     bool transfer(uint8_t first, uint32_t data, uint32_t& reply);

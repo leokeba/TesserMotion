@@ -2,6 +2,7 @@
 
 #include "tessermotion/platform/esp/uart_port.h"
 
+#include "driver/gpio.h"
 #include "driver/uart.h"
 #include "esp_log.h"
 
@@ -31,6 +32,9 @@ bool UartPort::begin() {
         err = uart_set_pin(port, config_.tx >= 0 ? config_.tx : UART_PIN_NO_CHANGE, config_.rx, UART_PIN_NO_CHANGE,
                            UART_PIN_NO_CHANGE);
     }
+    // ESP-IDF 6.1's uart_set_pin() no longer pulls RX up: a line left
+    // floating (a GPS unplugged) reads noise.
+    if (err == ESP_OK) err = gpio_pullup_en(static_cast<gpio_num_t>(config_.rx));
     if (err == ESP_OK) err = uart_driver_install(port, kRxBufferBytes, 0, 0, nullptr, 0);
     if (err != ESP_OK) {
         ESP_LOGE(kTag, "UART %d on RX %d: %s", config_.port, config_.rx, esp_err_to_name(err));

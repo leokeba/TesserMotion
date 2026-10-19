@@ -39,16 +39,32 @@ void TmcDriver::begin() {
 
 bool TmcDriver::identify() {
     uint32_t v = 0;
-    if (!busRead(common_.version.reg, v)) return false;
+    busError_ = TmcError::Bus;
+    if (!busRead(common_.version.reg, v)) {
+        lastError_ = busError_;
+        return false;
+    }
     {
         Guard g(lock());
         shadow_[common_.version.reg & 0x7F] = v;
     }
-    return static_cast<uint32_t>(common_.version.get(v)) == common_.expectedVersion;
+    if (static_cast<uint32_t>(common_.version.get(v)) != common_.expectedVersion) {
+        lastError_ = TmcError::WrongVersion;
+        return false;
+    }
+    return true;
 }
 
 bool TmcDriver::connect() {
-    if (!busBegin() || !identify()) return false;
+    if (!busBegin()) {
+        errors_++;
+        lastError_ = TmcError::Bus;
+        return false;
+    }
+    if (!identify()) {
+        errors_++;
+        return false;
+    }
     // What the chip holds in the registers nothing will write: its status,
     // its position.
     for (size_t i = 0; i < map_.registerCount; i++) {
@@ -59,8 +75,10 @@ bool TmcDriver::connect() {
             if (isSet(dirty_, r.address)) continue;
         }
         uint32_t v = 0;
+        busError_ = TmcError::Bus;
         if (!busRead(r.address, v)) {
             errors_++;
+            lastError_ = busError_;
             return false;
         }
         Guard g(lock());
@@ -118,6 +136,14 @@ void TmcDriver::applySettings() {
         threshold = t >= 1048575.0f ? 1048575 : t < 1.0f ? 1 : static_cast<int32_t>(t);
     }
     set(common_.tpwmthrs, threshold);
+    set(common_.pwmOfs, pwm.ofs);
+    set(common_.pwmGrad, pwm.grad);
+    set(common_.pwmFreq, clampTo<uint8_t>(pwm.freq, 0, 3));
+    set(common_.pwmAutoscale, pwm.autoscale);
+    set(common_.pwmAutograd, pwm.autograd);
+    set(common_.freewheel, clampTo<uint8_t>(pwm.freewheel, 0, 3));
+    set(common_.pwmReg, clampTo<uint8_t>(pwm.reg, 1, 15));
+    set(common_.pwmLim, clampTo<uint8_t>(pwm.lim, 0, 15));
     applyChip();
     applyMotion();
 }
@@ -167,9 +193,15 @@ void TmcDriver::failed(uint64_t nowUs) {
 
 bool TmcDriver::read(uint8_t address, uint64_t nowUs) {
     uint32_t v = 0;
+    busError_ = TmcError::Bus;
+    if (!busRead(address, v)) {
+        lastError_ = busError_;
+        failed(nowUs);
+        return false;
+    }
     // A version that isn't the chip's is a garbled or floating bus.
-    if (!busRead(address, v) ||
-        (address == common_.version.reg && static_cast<uint32_t>(common_.version.get(v)) != common_.expectedVersion)) {
+    if (address == common_.version.reg && static_cast<uint32_t>(common_.version.get(v)) != common_.expectedVersion) {
+        lastError_ = TmcError::WrongVersion;
         failed(nowUs);
         return false;
     }
@@ -253,6 +285,8 @@ void TmcDriver::update(uint64_t nowUs) {
         drive_ = Drive::Hold;
         velocity_ = 0;
     }
+    advance(lastUpdateUs_ ? static_cast<float>(nowUs - lastUpdateUs_) * 1e-6f : 0.0f);
+    lastUpdateUs_ = nowUs;
     applySettings();
 
     Status& s = status_;
@@ -266,6 +300,8 @@ void TmcDriver::update(uint64_t nowUs) {
     s.shortToSupply = get(common_.s2vsa) || get(common_.s2vsb);
     s.openLoad = get(common_.ola) || get(common_.olb);
     s.driverError = get(common_.drvErr) != 0;
+    s.stallGuard = static_cast<uint16_t>(get(common_.sgResult));
+    s.lastError = lastError_;
 }
 
 void TmcDriver::stop() {
@@ -302,10 +338,47 @@ float TmcDriver::velocity() {
     return drive_ == Drive::Velocity ? velocity_ : 0;
 }
 
+float TmcDriver::actualVelocity() {
+    Guard g(lock());
+    return measuredVelocity();
+}
+
 void TmcDriver::hold() {
     Guard g(lock());
     drive_ = Drive::Hold;
     velocity_ = 0;
+}
+
+void TmcDriver::overrideCurrent(float amps) {
+    Guard g(lock());
+    override_ = amps > 0 ? amps : 0;
+}
+
+float TmcDriver::currentOverride() {
+    Guard g(lock());
+    return override_;
+}
+
+void TmcDriver::claim(const char* owner) {
+    Guard g(lock());
+    owner_ = owner ? owner : "";
+}
+
+void TmcDriver::release() {
+    Guard g(lock());
+    owner_.clear();
+}
+
+std::string TmcDriver::owner() {
+    Guard g(lock());
+    return owner_;
+}
+
+float TmcDriver::runAmps() const { return override_ > 0 ? override_ : settings.runCurrent; }
+
+float TmcDriver::holdAmps() const {
+    if (override_ > 0) return override_;
+    return settings.holdCurrent < settings.runCurrent ? settings.holdCurrent : settings.runCurrent;
 }
 
 TmcDriver::Status TmcDriver::status() {

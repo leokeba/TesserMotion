@@ -17,11 +17,23 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <string>
+
 #include "tessermotion/motion.h"
 #include "tessermotion/platform.h"
 #include "tessermotion/tmc_map.h"
 
 namespace tessermotion {
+
+// Why the chip last didn't answer.
+enum class TmcError : uint8_t {
+    None,
+    Bus,           // the bus refused the transfer
+    NoReply,       // nothing came back (SPI: all ones)
+    EchoOnly,      // the UART's own request came back, no reply
+    BadReply,      // short, or a bad sync, register or CRC
+    WrongVersion,  // IOIN's version isn't the chip's
+};
 
 class TmcDriver : public Part {
 public:
@@ -48,6 +60,18 @@ public:
         uint8_t hend = 1;   // hysteresis end, 0..15 (−3..12)
         uint8_t tbl = 2;    // blank time, 0..3
     };
+    // stealthChop's PWM (PWMCONF), in the datasheet's units; the defaults are
+    // the chip's reset values.
+    struct Pwm {
+        uint8_t ofs;     // amplitude offset: autoscale's start, at standstill
+        uint8_t grad;    // amplitude gradient with speed: autoscale's start
+        uint8_t freq;    // 0..3: 2/1024, 2/683, 2/512, 2/410 of the clock
+        bool autoscale;  // regulates the amplitude to the current
+        bool autograd;   // and the gradient
+        uint8_t freewheel;  // 0..3 at standstill with a hold current of 0: normal, free, coils shorted low or high
+        uint8_t reg;     // 1..15: autoscale's regulation loop gradient
+        uint8_t lim;     // 0..15: autoscale's limit when switching from spreadCycle
+    };
     struct Status {
         bool present = false;
         bool standstill = false;
@@ -59,8 +83,10 @@ public:
         bool shortToSupply = false;  // either coil
         bool openLoad = false;       // either coil; unreliable at standstill and at speed
         bool driverError = false;    // the power stage shut down (a short, overtemperature)
+        uint16_t stallGuard = 0;     // SG_RESULT: lower is more load (TMC2209: read in turn)
         uint32_t resets = 0;         // times the chip was reset (lost power) since boot
-        uint32_t errors = 0;         // failed transfers since boot
+        uint32_t errors = 0;         // failed transfers since boot, searches for an absent chip included
+        TmcError lastError = TmcError::None;  // why the last one failed
     };
 
     // The fields every chip has, from its map (for the chips' classes).
@@ -72,12 +98,15 @@ public:
         TmcField tpwmthrs;
         TmcField toff, hstrt, hend, tbl, mres, intpol;  // CHOPCONF
         TmcField stst, stealth, csActual, ot, otpw, s2ga, s2gb, s2vsa, s2vsb, ola, olb;  // DRV_STATUS
+        TmcField sgResult;
+        TmcField pwmOfs, pwmGrad, pwmFreq, pwmAutoscale, pwmAutograd, freewheel, pwmReg, pwmLim;  // PWMCONF
     };
 
     // Settings: set them before Motion starts, or under lock() afterwards
     // (the tree does).
     Settings settings;
     Chopper chopper;
+    Pwm pwm;
 
     // From any task: these take Motion's lock.
     // The power stage. Drivers boot disabled; enabling or disabling stops
@@ -89,8 +118,20 @@ public:
     // itself (not a TMC5160 strapped for step and direction).
     bool setVelocity(float microstepsPerSecond);
     float velocity();  // as set: 0 when not turning at a velocity
-    // Stops whatever the motor does (decelerating, on a TMC5160).
+    // The velocity now, µsteps/s: the TMC5160's VACTUAL, the TMC2209's ramp.
+    float actualVelocity();
+    // Stops whatever the motor does, decelerating at the ramp's acceleration.
     void hold();
+    // A current for a while, A rms, run and hold alike, without touching the
+    // settings: until overrideCurrent(0). Not stored.
+    void overrideCurrent(float amps);
+    float currentOverride();  // 0: none
+    // An owner (an application's part) drives the motor: until release(),
+    // the tree refuses writes to enabled, velocity, stop and target with
+    // `busy`, "driven by <owner>". Code isn't refused.
+    void claim(const char* owner);
+    void release();
+    std::string owner();  // empty when unclaimed
     Status status();
     bool present();
     // The most current the sense resistor allows, A rms.
@@ -115,8 +156,9 @@ public:
 protected:
     enum class Drive : uint8_t { Hold, Velocity, Position };
 
-    TmcDriver(const TmcMap& map, const Common& common, uint16_t microsteps, uint32_t clockHz, int enablePin, Gpio* gpio)
-        : map_(map), common_(common), clockHz_(clockHz), enablePin_(enablePin), gpio_(gpio) {
+    TmcDriver(const TmcMap& map, const Common& common, uint16_t microsteps, const Pwm& pwmDefaults, uint32_t clockHz,
+              int enablePin, Gpio* gpio)
+        : pwm(pwmDefaults), map_(map), common_(common), clockHz_(clockHz), enablePin_(enablePin), gpio_(gpio) {
         settings.microsteps = microsteps;
     }
 
@@ -134,6 +176,11 @@ protected:
     virtual void applyMotion() = 0;
     // Whether the chip turns the motor itself (velocity, positioning).
     virtual bool drives() const { return true; }
+    // Under the lock, once a tick before the settings are applied: the time
+    // since the last tick, for a ramp.
+    virtual void advance(float seconds) { (void)seconds; }
+    // Under the lock: the velocity now, µsteps/s.
+    virtual float measuredVelocity() const = 0;
 
     // The register copy, under the lock.
     uint32_t reg(uint8_t address) const { return shadow_[address & 0x7F]; }
@@ -148,6 +195,12 @@ protected:
     // The current scale 0..31 for `amps` with full scale `volts` across the
     // sense resistor (and `scale` of it): (n + 1)/32 = I·√2·R / (V·scale).
     static int32_t currentScale(float amps, float ohms, float volts, float scale = 1);
+    // Under the lock: the run and hold currents to apply, A rms (the
+    // override, else the settings, hold at most run).
+    float runAmps() const;
+    float holdAmps() const;
+    // The transport says why it failed before returning false; control task.
+    TmcError busError_ = TmcError::None;
 
     // Under the lock.
     bool enabled_ = false;
@@ -199,7 +252,9 @@ private:
     size_t readCount_ = 0;
     uint32_t retry_[4] = {};  // writes that failed, to make again
     uint32_t errors_ = 0;
+    TmcError lastError_ = TmcError::None;
     int enableLevel_ = -1;  // the pin's, -1 before set
+    uint64_t lastUpdateUs_ = 0;
 
     // Under the lock.
     uint32_t shadow_[128] = {};
@@ -208,6 +263,8 @@ private:
     Write clears_[kMaxClears];  // flags to clear (ReadClear registers)
     size_t clearCount_ = 0;
     bool present_ = false;
+    float override_ = 0;
+    std::string owner_;
     bool velocityWritten_ = false;
     uint64_t velocitySinceUs_ = 0;
     Status status_;

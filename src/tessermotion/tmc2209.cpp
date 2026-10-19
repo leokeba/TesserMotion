@@ -15,7 +15,12 @@ constexpr TmcDriver::Common kCommon = {
     t::version, Tmc2209::kVersion, t::reset, t::drv_err, t::shaft, t::tpwmthrs,
     t::toff, t::hstrt, t::hend, t::tbl, t::mres, t::intpol,
     t::stst, t::stealth, t::cs_actual, t::ot, t::otpw, t::s2ga, t::s2gb, t::s2vsa, t::s2vsb, t::ola, t::olb,
+    t::sg_result,
+    t::pwm_ofs, t::pwm_grad, t::pwm_freq, t::pwm_autoscale, t::pwm_autograd, t::freewheel, t::pwm_reg, t::pwm_lim,
 };
+
+// PWMCONF's reset value, 0xC10D0024.
+constexpr TmcDriver::Pwm kPwm = {36, 0, 1, true, true, 0, 1, 12};
 
 // Read every tick, besides one other in turn: GSTAT comes round in a third
 // of a second at 50 Hz.
@@ -31,7 +36,7 @@ constexpr float kVactualMax = 8388607;    // 2^23 − 1
 }  // namespace
 
 Tmc2209::Tmc2209(Uart& uart, const Tmc2209Config& config, Gpio* gpio)
-    : TmcDriver(t::kMap, kCommon, 16, config.clockHz, config.enable, gpio), uart_(uart), config_(config) {}
+    : TmcDriver(t::kMap, kCommon, 16, kPwm, config.clockHz, config.enable, gpio), uart_(uart), config_(config) {}
 
 float Tmc2209::maxCurrent() const { return kFullScaleVolts / (1.41421356f * (config_.rSense + kInternalOhms)); }
 
@@ -61,14 +66,26 @@ bool Tmc2209::busRead(uint8_t address, uint32_t& value) {
     drain();
     uint8_t request[4] = {kSync, config_.address, static_cast<uint8_t>(address & 0x7F), 0};
     request[3] = crc(request, 3);
-    if (!uart_.write(request, sizeof request)) return false;
+    if (!uart_.write(request, sizeof request)) {
+        busError_ = TmcError::Bus;
+        return false;
+    }
     uint8_t reply[8];
-    if (uart_.read(reply, 4, kTimeoutMs) != 4) return false;
+    size_t n = uart_.read(reply, 4, kTimeoutMs);
+    if (n != 4) {
+        busError_ = n == 0 ? TmcError::NoReply : TmcError::BadReply;
+        return false;
+    }
     size_t have = 4;
     echo_ = memcmp(reply, request, sizeof request) == 0;
     if (echo_) have = 0;
-    if (uart_.read(reply + have, sizeof reply - have, kTimeoutMs) != sizeof reply - have) return false;
+    n = uart_.read(reply + have, sizeof reply - have, kTimeoutMs);
+    if (n != sizeof reply - have) {
+        busError_ = n == 0 && echo_ ? TmcError::EchoOnly : TmcError::BadReply;
+        return false;
+    }
     if (reply[0] != kSync || reply[1] != kReplyAddress || reply[2] != request[2] || reply[7] != crc(reply, 7)) {
+        busError_ = TmcError::BadReply;
         return false;
     }
     value = (uint32_t(reply[3]) << 24) | (uint32_t(reply[4]) << 16) | (uint32_t(reply[5]) << 8) | reply[6];
@@ -105,8 +122,8 @@ void Tmc2209::applyChip() {
     // I = (CS + 1)/32 · V/(R + 20 mΩ)/√2, V 0.325, or 0.180 with vsense:
     // finer steps for currents under half of full scale.
     float r = config_.rSense + kInternalOhms;
-    float run = settings.runCurrent;
-    float hold = settings.holdCurrent < run ? settings.holdCurrent : run;
+    float run = runAmps();
+    float hold = holdAmps();
     bool vsense = currentScale(run, r, kFullScaleVolts) < 16;
     float volts = vsense ? kLowScaleVolts : kFullScaleVolts;
     set(t::vsense, vsense);
@@ -120,11 +137,25 @@ void Tmc2209::applyChip() {
     set(t::en_spreadcycle, !settings.stealthChop);
 }
 
+float Tmc2209::target() const { return enabled_ && drive_ == Drive::Velocity ? velocity_ : 0; }
+
+void Tmc2209::advance(float seconds) {
+    float to = target();
+    float step = ramp.acceleration * seconds;
+    if (!enabled_ || !(ramp.acceleration > 0) || fabsf(to - ramped_) <= step) {
+        ramped_ = to;
+    } else {
+        ramped_ += to > ramped_ ? step : -step;
+    }
+}
+
 void Tmc2209::applyMotion() {
-    float v = 0;
-    if (enabled_ && drive_ == Drive::Velocity) v = velocityUnits(velocity_);
+    // Without a ramp, a new velocity goes out in the tick it was set.
+    float v = velocityUnits(ramp.acceleration > 0 && enabled_ ? ramped_ : target());
     v = v > kVactualMax ? kVactualMax : v < -kVactualMax ? -kVactualMax : v;
     set(t::vactual, static_cast<int32_t>(lroundf(v)));
 }
+
+float Tmc2209::measuredVelocity() const { return ramp.acceleration > 0 && enabled_ ? ramped_ : target(); }
 
 }  // namespace tessermotion

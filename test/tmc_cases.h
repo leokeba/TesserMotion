@@ -519,10 +519,16 @@ TEST(tree_tmc) {
     CHECK(r.set("/stepper/registers/DRV_CONF/value", "1").status == tesser::Status::ReadOnly);
     r.tick();
     CHECK_EQ(r.chip.written[r51::DRV_CONF], 524800u);
-    // The TMC2209's tree has no ramp.
+    // The TMC2209's tree has a ramp, but no positioning.
     CHECK_EQ(r.get("/small/status/present").body, "true");
-    CHECK(r.get("/small/ramp").status == tesser::Status::NotFound);
+    CHECK_EQ(r.get("/small/ramp/acceleration").body, "0");
+    CHECK(r.get("/small/ramp/maxSpeed").status == tesser::Status::NotFound);
     CHECK(r.get("/small/target").status == tesser::Status::NotFound);
+    // Fields the generator adds where TMC-API has none.
+    r.chip2209.regs[r22::SG_RESULT] = 123;
+    r.tick(static_cast<int>(r22::kMap.registerCount));
+    CHECK_EQ(r.get("/small/registers/SG_RESULT/fields").body, "\"sg_result=123\"");
+    CHECK_EQ(r.get("/small/status/stallGuard").body, "123");
     CHECK_EQ(r.get("/small/registers/VACTUAL/access").body, "\"write\"");
 }
 
@@ -553,4 +559,159 @@ TEST(tree_tmc_map) {
     JsonDocument small;
     CHECK(!deserializeJson(small, tmcMapJson(r22::kMap)));
     CHECK_EQ(small["registers"].size(), r22::kMap.registerCount);
+}
+
+TEST(tmc2209_ramp) {
+    Rig2209 r;
+    r.driver.ramp.acceleration = 10000;  // µsteps/s²: 200 a tick at 50 Hz
+    r.driver.enable(true);
+    r.tick();
+    // Up a step a tick, renewed as an application renews it.
+    float last = 0;
+    for (int i = 0; i < 4; i++) {
+        CHECK(r.driver.setVelocity(1000));
+        r.tick();
+        float v = r.driver.actualVelocity();
+        CHECK(fabsf(v - last - 200) < 1);
+        last = v;
+    }
+    CHECK_EQ(r22::vactual.get(r.chip.written[r22::VACTUAL]), 839);  // 600 µsteps/s, written a tick after
+    for (int i = 0; i < 3; i++) {
+        CHECK(r.driver.setVelocity(1000));
+        r.tick();
+    }
+    CHECK_EQ(r.driver.actualVelocity(), 1000.0f);
+    CHECK_EQ(r22::vactual.get(r.chip.written[r22::VACTUAL]), 1398);
+    // Reversing goes through 0.
+    CHECK(r.driver.setVelocity(-1000));
+    r.tick(3);
+    CHECK(fabsf(r.driver.actualVelocity() - 400) < 1);
+    // hold() ramps down, and so does the deadman.
+    r.driver.hold();
+    r.tick();
+    CHECK(fabsf(r.driver.actualVelocity() - 200) < 1);
+    r.tick(2);
+    CHECK_EQ(r.driver.actualVelocity(), 0.0f);
+    CHECK(r.driver.setVelocity(1000));
+    r.run(0.2f);
+    CHECK_EQ(r.driver.actualVelocity(), 1000.0f);
+    r.run(1.0f);
+    CHECK_EQ(r.driver.actualVelocity(), 0.0f);
+    CHECK_EQ(r.chip.written[r22::VACTUAL], 0u);
+    // Disabling stops it at once.
+    for (int i = 0; i < 10; i++) {
+        CHECK(r.driver.setVelocity(1000));
+        r.tick();
+    }
+    r.driver.enable(false);
+    r.tick();
+    CHECK_EQ(r.driver.actualVelocity(), 0.0f);
+    r.tick();
+    CHECK_EQ(r.chip.written[r22::VACTUAL], 0u);
+}
+
+TEST(tmc_pwm_settings) {
+    // The defaults are the chip's reset values.
+    Rig2209 small;
+    CHECK_EQ(small.chip.written[r22::PWMCONF], 0xC10D0024u);
+    Rig5160 big;
+    CHECK(!big.chip.wrote(r51::PWMCONF));
+    CHECK_EQ(big.driver.registerValue(r51::PWMCONF), 0xC40C001Eu);
+    // Fluante's start.
+    small.driver.pwm.ofs = 255;
+    small.driver.pwm.grad = 14;
+    small.driver.pwm.freewheel = 1;
+    small.tick();
+    CHECK_EQ(small.written(r22::pwm_ofs), 255u);
+    CHECK_EQ(small.written(r22::pwm_grad), 14u);
+    CHECK_EQ(small.written(r22::freewheel), 1u);
+    CHECK_EQ(small.written(r22::pwm_lim), 12u);
+    // Owned by the settings: a raw write of them doesn't last.
+    CHECK(small.driver.writeRegister(r22::PWMCONF, r22::pwm_ofs.set(0xC10D0024, 7)));
+    small.tick(2);
+    CHECK_EQ(small.written(r22::pwm_ofs), 255u);
+    big.driver.pwm.reg = 0;  // not allowed: 1 at least
+    big.tick();
+    CHECK_EQ(big.written(r51::pwm_reg), 1u);
+}
+
+TEST(tmc_current_override) {
+    Rig5160 r;
+    r.driver.overrideCurrent(0.1f);
+    CHECK_EQ(r.driver.currentOverride(), 0.1f);
+    r.tick();
+    CHECK_EQ(r.written(r51::global_scaler), 32u);  // the least
+    CHECK_EQ(r.written(r51::irun), 7u);             // 32 · 0.1·√2·0.075 / (0.325 · 32/256) = 8.35, − 1
+    CHECK_EQ(r.written(r51::ihold), 7u);
+    CHECK_EQ(r.driver.settings.runCurrent, 0.5f);
+    r.driver.overrideCurrent(0);
+    r.tick();
+    CHECK_EQ(r.written(r51::global_scaler), 42u);
+    CHECK_EQ(r.written(r51::irun), 31u);
+    CHECK_EQ(r.written(r51::ihold), 15u);
+}
+
+TEST(tmc_errors) {
+    // An absent TMC5160: MISO floats high.
+    Rig5160 big(false);
+    big.tick();  // the counts reach status() on a tick
+    CHECK_EQ(big.driver.status().errors, 1u);
+    CHECK(big.driver.status().lastError == TmcError::NoReply);
+    big.run(2.1f);
+    CHECK_EQ(big.driver.status().errors, 2u);  // a search every 2 s
+    // A chip answering with another version.
+    big.chip.regs[r51::INP_OUT] = 0x11000000;
+    big.chip.attach(big.bus, kCs);
+    big.run(2.1f);
+    CHECK(!big.driver.present());
+    CHECK(big.driver.status().lastError == TmcError::WrongVersion);
+    // A TMC2209 at another address: the echo, no reply.
+    Rig2209 echoOnly(true, 2, 0);
+    echoOnly.tick();
+    CHECK(echoOnly.driver.status().lastError == TmcError::EchoOnly);
+    Rig2209 silent(false, 2, 0);
+    silent.tick();
+    CHECK(silent.driver.status().lastError == TmcError::NoReply);
+    // A bad CRC.
+    Rig2209 garbled;
+    garbled.chip.powered = false;
+    garbled.uart.onWrite = [&garbled](const uint8_t* data, size_t len) {
+        garbled.uart.send(std::string(reinterpret_cast<const char*>(data), len));
+        if (len == 4) garbled.uart.send(std::string("\x05\xFF\x6F\x00\x00\x00\x00\x00", 8));
+    };
+    garbled.tick();
+    CHECK(garbled.driver.status().lastError == TmcError::BadReply);
+    // The TMC5160's load, from DRV_STATUS.
+    Rig5160 r;
+    r.chip.regs[r51::DRV_STATUS] = r51::sg_result.set(0, 300);
+    r.chip.regs[r51::VACTUAL] = 71583;
+    r.tick();
+    CHECK_EQ(r.driver.status().stallGuard, 300);
+    CHECK(fabsf(r.driver.actualVelocity() - 51200) < 1);
+    CHECK(r.driver.status().lastError == TmcError::None);
+}
+
+TEST(tree_tmc_claim) {
+    TmcTreeRig r;
+    CHECK(r.set("/small/enabled", "true").status == tesser::Status::Ok);
+    r.small.claim("spinner");
+    CHECK_EQ(r.small.owner(), "spinner");
+    auto refused = [&r](const std::string& path, const std::string& body) {
+        TmcTreeRig::Reply reply = r.set(path, body);
+        CHECK(reply.status == tesser::Status::Busy);
+        CHECK(reply.body.find("driven by spinner") != std::string::npos);
+    };
+    refused("/small/enabled", "false");
+    refused("/small/velocity", "100");
+    refused("/small/stop", "");
+    // Code isn't refused; the readouts stay.
+    CHECK(r.small.setVelocity(100));
+    r.tick();
+    CHECK_EQ(r.get("/small/velocity").body, "100");
+    CHECK_EQ(r.get("/small/enabled").body, "true");
+    r.driver.claim("tracker");
+    CHECK(r.set("/stepper/target", "10").status == tesser::Status::Busy);
+    r.small.release();
+    CHECK(r.set("/small/stop", "").status == tesser::Status::Ok);
+    CHECK_EQ(r.get("/small/velocity").body, "0");
 }
