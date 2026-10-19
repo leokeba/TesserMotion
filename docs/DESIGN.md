@@ -1,6 +1,6 @@
 # TesserMotion design
 
-Status: phases 1 and 2 implemented (2026-10-11): the platform layer, `DcMotor`/`Tb6612Channel`, `Mt6701`, `Axis`, `Motion` and their trees, host-tested against a simulated plant, and commissioned on the heliostat's two axes (through tiny-heliostat). Phase 4's sensors (`Adxl345` with `Tilt`, `NmeaGps`) implemented, host-tested, and run on the second heliostat (2026-10-16, through tiny-heliostat): tilt, GPS fix and the clock set from GPS. The angle sensor's correction (§4.2) implemented and host-tested (2026-10-18), not yet run on hardware. This is the specification the code follows; when the two disagree, fix one of them. Sections marked *(later)* are committed to but not implemented yet. References to TesserAPI, TesserUI and TesserKIT point to their own DESIGN.md: [TesserAPI](https://github.com/leokeba/TesserAPI/blob/main/docs/DESIGN.md), [TesserUI](https://github.com/leokeba/TesserUI/blob/main/docs/DESIGN.md), [TesserKIT](https://github.com/leokeba/TesserKIT/blob/main/docs/DESIGN.md).
+Status: phases 1 and 2 implemented (2026-10-11): the platform layer, `DcMotor`/`Tb6612Channel`, `Mt6701`, `Axis`, `Motion` and their trees, host-tested against a simulated plant, and commissioned on the heliostat's two axes (through tiny-heliostat). Phase 4's sensors (`Adxl345` with `Tilt`, `NmeaGps`) implemented, host-tested, and run on the second heliostat (2026-10-16, through tiny-heliostat): tilt, GPS fix and the clock set from GPS. The angle sensor's correction (§4.2) implemented and host-tested (2026-10-18), and the accelerometer's (§6.1, 2026-10-19); neither run on hardware yet. This is the specification the code follows; when the two disagree, fix one of them. Sections marked *(later)* are committed to but not implemented yet. References to TesserAPI, TesserUI and TesserKIT point to their own DESIGN.md: [TesserAPI](https://github.com/leokeba/TesserAPI/blob/main/docs/DESIGN.md), [TesserUI](https://github.com/leokeba/TesserUI/blob/main/docs/DESIGN.md), [TesserKIT](https://github.com/leokeba/TesserKIT/blob/main/docs/DESIGN.md).
 
 ## 1. Goals
 
@@ -269,10 +269,18 @@ Tilt tilt(accel);      // the Part: motion.add(tilt); api.mount("tilt", tilt);
 ```
 
 - **`Adxl345`** (I2C, address 0x53 or 0x1D): checks DEVID 0xE5, then sets 100 Hz (BW_RATE 0x0A), full resolution ±16 g (DATA_FORMAT 0x0B) and measure mode (POWER_CTL 0x08). It reads six bytes from 0x32, at 3.9 mg/LSB. These are the heliostat's settings. Like the MT6701, it recovers the bus after 3 failed reads in a row; `begin()` never does.
-- **`Tilt`** is the Part. It reads the accelerometer every `every` ticks (default 5, so 10 Hz at 50 Hz) in `sense()`, and averages the last `samples` readings (default 8, up to 32). It reports `x`, `y`, `z`, then `pitch` = atan2(−x, √(y² + z²)) and `roll` = atan2(y, z) in degrees, and `present`.
+- **`Tilt`** is the Part. It reads the accelerometer every `every` ticks (default 5, so 10 Hz at 50 Hz) in `sense()`, and averages the last `samples` readings (default 8, up to 32). It reports `x`, `y`, `z`, the average corrected (below), then `pitch` = atan2(−x, √(y² + z²)) and `roll` = atan2(y, z) in degrees, and `present`.
 - **Absent sensors:** a sensor that fails `begin()`, or 3 reads in a row, is absent: it isn't read, and `begin()` is tried again every 2 s, starting a new average. So an accelerometer missing from a bus it shares with an encoder costs one NACK every 2 s and never resets the bus.
-- **`average(n, fn)`** *(later)*: a deferred action that collects n fresh readings and replies with their mean, for calibration routines (the heliostat's `AccelCalibService` samples it this way). Not built until one needs it.
-- Bias and scale calibration of the sensor itself *(later)*. It will be needed: the second heliostat's ADXL345 reads |g| ≈ 8.5 m/s², not 9.81. The heliostat's joint solver over encoder offsets and mount misalignment stays in the heliostat.
+- **`average(n, fn)`** *(later)*: a deferred action that collects n fresh readings and replies with their mean, for calibration routines. Not built until one needs it.
+
+**Correction.** An accelerometer has a bias and a scale error on each axis (the ADXL345's datasheet allows about ±150 mg of zero-g offset on z and ±10% of sensitivity; the second heliostat's reads |g| ≈ 8.5 m/s²). `AccelCorrection` models them as corrected_i = scale_i · (raw_i − bias_i) for x, y, z, and the tilt applies it to the average. Cross-axis terms are left out: the ADXL345's are about 1%.
+
+- **Points** are still readings in poses spread over every direction; nothing else is needed, since a still sensor reads g = 9.80665 m/s² in any pose. `record` takes the current average, uncorrected, and refuses while it isn't full (`samples` readings since the sensor was found) or when any reading in it is more than 0.5 m/s² from the mean (the sensor moved; its noise is about 0.05 m/s²). So: set `samples` to 32, hold a pose for longer than the average (3.2 s at 10 Hz), record, repeat. Each point has a weight; weight 0 leaves it out.
+- **The fit** finds the six parameters that put the corrected points on the sphere of radius g: weighted least squares on |corrected| − g, by Gauss–Newton from no correction, a step halved while it doesn't lower the cost. Six exact poses (a tumble: each axis up, then down) fit exactly.
+- **Refusals** keep the correction as it was: fewer than 6 points, a point that isn't a number, a point whose magnitude isn't within 0.5 g of 1 g (not still), no convergence, or a result past |bias| 0.5 g or a scale outside 0.5 to 2. The fit also refuses points that don't determine every parameter. Each parameter's error per unit of noise in the readings, √(W·(H⁻¹)ⱼⱼ) from the normal matrix H and the total weight W, must be at most 8. That is 1.7 for a tumble, about 2.5 for poses spread evenly and 4.5 for a typical dozen placed by hand, but 16 for z when z only ever points up: its bias then can't be told from its scale. The message names the axis to point up and down. Poses from turning about one axis (an elevation axis alone) never move that axis's reading, and are refused.
+- **Residuals,** computed on each read from the points and the correction as it is: the points used, and the RMS and maximum of |corrected| − g.
+- An equal scale error on all three axes doesn't change pitch and roll, only |g|; a bias or unequal scales do.
+- A fit joining the accelerometer with the encoders and the mount's misalignment is application geometry (§1), not here.
 
 ### 6.2 GPS
 
@@ -308,7 +316,7 @@ ESP-IDF refuses to link the legacy I2C driver (`driver/i2c.h`) and the new one (
 
 ## 8. Persistence
 
-Settings are persisted with TesserAPI's `.persist()` (TesserAPI §12): an axis's `tuning`, `limits`, `sensor/config`, `motor/config`, and its correction's `harmonics`, `points` and coefficients (`cos`, `sin`, read-only, restored when loading); later a sequencer's frames and `loop`, an accelerometer's `samples`. Status values (`position`, `state`, ...) aren't, and neither is `enabled`: axes boot disabled, and `stopAll()` disabling them is never half-saved. As TesserAPI loads leniently, a firmware with a renamed setting boots with its default. The limits and the target are in the raw frame (§4.3), so the order settings load in doesn't matter.
+Settings are persisted with TesserAPI's `.persist()` (TesserAPI §12): an axis's `tuning`, `limits`, `sensor/config`, `motor/config`, and its correction's `harmonics`, `points` and coefficients (`cos`, `sin`, read-only, restored when loading); a tilt's `samples` and its correction's `points`, `bias` and `scale` (read-only, restored when loading); later a sequencer's frames and `loop`. Status values (`position`, `state`, ...) aren't, and neither is `enabled`: axes boot disabled, and `stopAll()` disabling them is never half-saved. As TesserAPI loads leniently, a firmware with a renamed setting boots with its default. The limits and the target are in the raw frame (§4.3), so the order settings load in doesn't matter.
 
 ## 9. The trees
 
@@ -387,6 +395,19 @@ tilt/                             Tilt
   present       boolean (w)
   samples       integer (p)       1..32
   average       action            (later) deferred; argument n (1..256), replies {x, y, z}
+  correction/   ui collapsed, label "Correction" (§6.1)
+    points      list (p)          {x, y, z, weight}: m/s², uncorrected, ±160; weight 0..100
+                                  (0: left out); maxSize 32
+    bias        array (p)         3 numbers, m/s²; read-only, written by fit and clear
+    scale       array (p)         3 numbers; read-only, written by fit and clear
+    record      action            adds a point at the current average; not_allowed without a
+                                  sensor, before the average is full, when it moved, or when full
+    fit         action            fits the points and applies the correction; invalid_value with
+                                  the reason when it can't
+    clear       action            removes the correction; the points stay
+    residuals/                    of the points with the correction as it is, on each read
+      points    integer  (w)
+      rms, max  number (w), m/s²  of |corrected| − g
 
 gps/                              NmeaGps
   fix           enum   (w)
@@ -397,7 +418,7 @@ gps/                              NmeaGps
   errors        integer (w)       checksum and parse failures
 ```
 
-Everything but `samples` changes without a write, so it is watched (§9.1's rule).
+Everything but the settings (`samples`, the correction's points, bias and scale) changes without a write, so it is watched (§9.1's rule).
 
 ### 9.4 Motion
 
@@ -442,6 +463,7 @@ Measured as in TesserAPI §15 and TesserKIT §11: an example built with and with
    - **Sequencer:** before the first frame, between frames, after the end, looping, zero duration, empty tracks (NaN), wrap, unsorted writes, refusal of axis target writes while running.
    - **Correction:** known harmonics recovered from points with any zero (±180 included); apply and remove inverse to 10⁻⁴°; a short arc corrected on the arc and small off it; weights (0 leaves out, twice equals weight 2, light points move it less); automatic harmonics; refusals leave the correction unchanged; coverage across 0°. In an axis on a plant with an off-centre magnet: targets reached within 0.2° after a calibration from 24 points; a fit while holding doesn't move the motor; references through an inverted sensor with an offset, and the zero to add.
    - **Drivers:** MT6701 register traffic on the fake bus, 0° as a valid reading, recovery after 3 failures; ADXL345 register traffic and scaling, an absent ADXL345 sharing a bus with an MT6701 (never read, never recovering the bus), `Tilt`'s averaging, loss and return; NMEA sentences (any talker, both hemispheres, bad checksums, missing checksums, malformed fields, partial and over-long lines, no fix, void RMC), `NmeaGps`'s fix, staleness and `takeTime()`. The sentences are standard examples; real captures from the heliostat's module go in `test/nmea/` once taken.
+   - **Accelerometer correction:** bias and scale recovered from 14 noisy poses spread evenly, and exactly from a tumble's six; refusals (too few points, weights 0 included, not a number, far from 1 g, poses turned about y alone, z only up) leave the correction unchanged, and poses down to 30° below the horizon are enough; weight 0 leaves out a moved point that otherwise pulls the fit off; in a tilt: the correction applied to the average and to pitch, points uncorrected, refused without a sensor, before the average is full and while it holds two poses.
    - **Trees:** requests through TesserAPI's handler (refusals, claims, settings, what is persisted), and golden schemas in `fixtures/*.json` (axis, motion, tilt, gps now; sequencer later) written by `tessermotion_fixtures`, as in TesserKIT §12, to be rendered in TesserUI's golden-model tests. They replace TesserUI's hand-written `motors` fixture (a gap report to TesserUI's agent).
 2. **On target:** `examples/idf/axis` (one axis on the heliostat's azimuth pins, the ADXL345 on its bus and the GPS, on TesserKIT for Wi-Fi and the interface; later a sequencer), driven by `test/e2e_motion.py` over HTTP and WebSocket: enable, move to targets and read back positions within tolerance, slew timing, limits, a sequence run, a sensor fault (unplugging is manual; the script asks), autotune, persistence across a restart. Motors move: see AGENTS.md before running it.
 3. **CI:** host tests, ESP-IDF builds (5.2, 5.4, 5.5, latest × ESP32, ESP32-C3, ESP32-S3), Arduino-ESP32 3.x builds of the examples.
@@ -473,7 +495,6 @@ TesserMotion/
 | Multi-turn angle sensors (unwrapped position, turns) | continuous rotation axes |
 | Other encoders: AS5600 (I2C), AS5048A (SPI) | other mechanics |
 | A command sequencer (spin-seq's typed commands, TesserKIT §10.2) | spin-seq |
-| Accelerometer bias and scale calibration | sensors on their own |
 | UBX configuration and PPS for the GPS | time accuracy |
 | MCPWM motor driver with PCNT encoders (`SOC_*`-guarded) | quadrature-encoded motors |
 | Synchronized starts across nodes (NowTP's shared clock) | fleets |

@@ -6,6 +6,7 @@ set(TESSERMOTION_CORE_SRCS
     src/tessermotion/adxl345.cpp
     src/tessermotion/nmea.cpp
     src/tessermotion/angle_correction.cpp
+    src/tessermotion/accel_correction.cpp
     src/tessermotion/axis.cpp
     src/tessermotion/motion.cpp
     src/tessermotion/tilt.cpp

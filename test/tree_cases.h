@@ -9,6 +9,7 @@
 #include <ArduinoJson.h>
 
 #include "TesserAPI.h"
+#include "accel_cases.h"  // its poses
 #include "sim.h"
 
 using namespace tessermotion;
@@ -150,6 +151,45 @@ TEST(tree_tilt) {
     CHECK(r.set("/tilt/samples", "33").status == tesser::Status::InvalidValue);
 }
 
+TEST(tree_tilt_correction) {
+    TreeRig r;
+    const std::string c = "/tilt/correction";
+    CHECK(r.set(c + "/record", "").status == tesser::Status::NotAllowed);  // no sensor
+    r.bus.regs[0x53][0x00] = 0xE5;
+    r.bus.regs[0x53][0x37] = 0x01;  // z: 256 LSB
+    r.run(3.2f);                     // found, and a full average
+    CHECK(r.set(c + "/record", "").status == tesser::Status::Ok);
+    CHECK_EQ(r.tilt.calibration.points.size(), size_t(1));
+    CHECK(fabsf(r.number(c + "/points/0/z") - 9.79f) < 0.01f);
+    CHECK_EQ(r.get(c + "/residuals/points").body, "1");
+    CHECK(r.set(c + "/fit", "").status == tesser::Status::InvalidValue);  // too few
+    // Points written whole, from elsewhere.
+    std::string points = "[";
+    for (const AccelPoint& p : accelPoses(14, accelTruth(), 0.02f)) {
+        points += (points.size() > 1 ? "," : "") + std::string("{\"x\":") + std::to_string(p.x) +
+                  ",\"y\":" + std::to_string(p.y) + ",\"z\":" + std::to_string(p.z) + "}";
+    }
+    CHECK(r.set(c + "/points", points + "]").status == tesser::Status::Ok);
+    CHECK(r.number(c + "/residuals/rms") > 0.5f);
+    CHECK(r.set(c + "/fit", "").status == tesser::Status::Ok);
+    CHECK(fabsf(r.number(c + "/bias/2") + 1.3f) < 0.02f);
+    CHECK(fabsf(r.number(c + "/scale/2") - 1.06f) < 0.003f);
+    CHECK(r.number(c + "/residuals/rms") < 0.02f);
+    r.run(0.2f);
+    CHECK(fabsf(r.number("/tilt/z") - 1.06f * (9.79f + 1.3f)) < 0.05f);  // corrected
+    CHECK(r.set(c + "/bias/0", "0").status != tesser::Status::Ok);    // only fit writes it
+    // Saved: the bias, the scale and the points.
+    tesser::MemoryStorage storage;
+    r.api.persistence(storage);
+    std::string state = r.api.persistedState();
+    CHECK(state.find("\"correction\":{\"points\":[{\"x\":") != std::string::npos);
+    CHECK(state.find("\"bias\":[0.2") != std::string::npos);
+    CHECK(state.find("\"scale\":[1.0") != std::string::npos);
+    CHECK(r.set(c + "/clear", "").status == tesser::Status::Ok);
+    CHECK(r.tilt.correction.scale[2] == 1 && r.tilt.correction.bias[2] == 0);
+    CHECK_EQ(r.tilt.calibration.points.size(), size_t(14));
+}
+
 TEST(tree_gps) {
     TreeRig r;
     CHECK_EQ(r.get("/gps/fix").body, "\"none\"");
@@ -223,7 +263,8 @@ TEST(tree_persists_settings_only) {
     CHECK(state.find("position") == std::string::npos);
     CHECK(state.find("enabled\":false") == std::string::npos);  // axes boot disabled
     CHECK(state.find("period") == std::string::npos);
-    CHECK(state.find("\"tilt\":{\"samples\":8}") != std::string::npos);
+    CHECK(state.find("\"tilt\":{\"samples\":8,\"correction\":{\"points\":[],\"bias\":[0,0,0],\"scale\":[1,1,1]}}") !=
+          std::string::npos);
     CHECK(state.find("gps") == std::string::npos);
 }
 

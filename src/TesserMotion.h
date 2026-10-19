@@ -2,6 +2,7 @@
 
 // TesserMotion: motion control and sensing on TesserAPI. See docs/DESIGN.md.
 
+#include "tessermotion/accel_correction.h"
 #include "tessermotion/accelerometer.h"
 #include "tessermotion/adxl345.h"
 #include "tessermotion/angle_correction.h"
