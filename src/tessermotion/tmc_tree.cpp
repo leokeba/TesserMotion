@@ -197,6 +197,9 @@ void describeStatus(Object& o, TmcDriver& d) {
             {"none", "bus", "noReply", "echoOnly", "badReply", "wrongVersion"})
         .watch()
         .doc("Why the last failed transfer failed");
+    s.value("found", [&d] { return d.status().found; }, {"stopped", "turning", "coasting"})
+        .watch()
+        .doc("What the last search found: turning through the ESP's reset (adopted, still enabled), or coasting (wait before enabling)");
 }
 
 void describeSettings(Object& o, TmcDriver& d) {

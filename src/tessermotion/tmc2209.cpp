@@ -12,7 +12,7 @@ namespace {
 namespace t = tmc2209;
 
 constexpr TmcDriver::Common kCommon = {
-    t::version, Tmc2209::kVersion, t::reset, t::drv_err, t::shaft, t::tpwmthrs,
+    t::version, Tmc2209::kVersion, t::reset, t::drv_err, t::enn, t::shaft, t::tstep, t::tpwmthrs,
     t::toff, t::hstrt, t::hend, t::tbl, t::mres, t::intpol,
     t::stst, t::stealth, t::cs_actual, t::ot, t::otpw, t::s2ga, t::s2gb, t::s2vsa, t::s2vsb, t::ola, t::olb,
     t::sg_result,
@@ -159,6 +159,32 @@ void Tmc2209::applyMotion() {
 uint8_t Tmc2209::velocityRegister() const { return t::VACTUAL; }
 
 void Tmc2209::rescale(float factor) { ramped_ *= factor; }
+
+void Tmc2209::adopt(float microstepsPerSecond) { ramped_ = microstepsPerSecond; }
+
+// VACTUAL can't be read: the speed from TSTEP (clock cycles between 1/256
+// microsteps), the direction from MSCNT (1/256 microsteps, modulo 1024)
+// across reads a millisecond or two apart, which must agree. Up to about
+// 1500 full steps/s, MSCNT moves less than half its turn between reads.
+bool Tmc2209::measure(float& fullStepsPerSecond) {
+    uint32_t tstep;
+    {
+        Guard g(lock());
+        tstep = static_cast<uint32_t>(get(t::tstep));
+    }
+    if (tstep == 0) return false;
+    uint32_t a, b, c;
+    if (!busRead(t::MSCNT, a) || !busRead(t::MSCNT, b) || !busRead(t::MSCNT, c)) return false;
+    auto delta = [](uint32_t from, uint32_t to) {
+        int32_t d = static_cast<int32_t>((to - from) & 1023u);
+        return d >= 512 ? d - 1024 : d;
+    };
+    int32_t d1 = delta(a & 1023u, b & 1023u), d2 = delta(b & 1023u, c & 1023u);
+    if (!((d1 > 0 && d2 > 0) || (d1 < 0 && d2 < 0))) return false;
+    float speed = static_cast<float>(clockHz()) / (256.0f * static_cast<float>(tstep));
+    fullStepsPerSecond = d1 > 0 ? speed : -speed;
+    return true;
+}
 
 float Tmc2209::measuredVelocity() const { return ramp.acceleration > 0 && enabled_ ? ramped_ : target(); }
 

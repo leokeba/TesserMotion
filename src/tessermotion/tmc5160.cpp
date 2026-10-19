@@ -11,7 +11,7 @@ namespace {
 namespace t = tmc5160;
 
 constexpr TmcDriver::Common kCommon = {
-    t::version, Tmc5160::kVersion, t::reset, t::drv_err, t::shaft, t::tpwmthrs,
+    t::version, Tmc5160::kVersion, t::reset, t::drv_err, t::drv_enn_cfg6, t::shaft, t::tstep, t::tpwmthrs,
     t::toff, t::hstrt, t::hend, t::tbl, t::mres, t::intpol,
     t::stst, t::stealth, t::cs_actual, t::ot, t::otpw, t::s2ga, t::s2gb, t::s2vsa, t::s2vsb, t::ola, t::olb,
     t::sg_result,
@@ -86,6 +86,16 @@ size_t Tmc5160::fastRegisters(const uint8_t*& list) const {
 bool Tmc5160::drives() const { return get(t::sd_mode) == 0; }
 
 uint8_t Tmc5160::velocityRegister() const { return t::VMAX; }
+
+// VACTUAL is readable, with its sign, in microsteps of the chip's MRES.
+bool Tmc5160::measure(float& fullStepsPerSecond) {
+    Guard g(lock());
+    int32_t v = get(t::vactual);
+    if (v == 0) return false;
+    fullStepsPerSecond = static_cast<float>(v) * static_cast<float>(clockHz()) / 16777216.0f /
+                         static_cast<float>(chipMicrosteps());
+    return true;
+}
 
 bool Tmc5160::canChangeResolution() const { return !drives() || get(t::vactual) == 0; }
 

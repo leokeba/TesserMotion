@@ -115,6 +115,7 @@ void Tmc2209::datagram(Uart& uart, const uint8_t* data, size_t len) {
         write(reg, v, readable2209(reg));
         regs[0x02] = (regs[0x02] + 1) & 0xFF;  // IFCNT
     } else if (len == 4) {
+        if (reg == 0x6A) regs[reg] = static_cast<uint32_t>(static_cast<int32_t>(regs[reg]) + mscntPerRead) & 1023u;
         uint32_t v = regs[reg];
         uint8_t r[8] = {0x05, 0xFF, reg, static_cast<uint8_t>(v >> 24), static_cast<uint8_t>(v >> 16),
                         static_cast<uint8_t>(v >> 8), static_cast<uint8_t>(v), 0};

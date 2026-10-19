@@ -35,6 +35,15 @@ enum class TmcError : uint8_t {
     WrongVersion,  // IOIN's version isn't the chip's
 };
 
+// What a search for the chip found (at boot, or after it was absent).
+enum class TmcFound : uint8_t {
+    Stopped,   // at standstill, or reset (it lost power): configured, disabled
+    Turning,   // turning by itself, powered and enabled through the ESP's
+               // reset: adopted, still enabled, at the velocity measured
+    Coasting,  // moving with its power stage off, or its direction unknown:
+               // configured, disabled; wait for the rotor before enabling
+};
+
 class TmcDriver : public Part {
 public:
     static constexpr uint8_t kAbsentAfter = 3;
@@ -87,6 +96,7 @@ public:
         uint32_t resets = 0;         // times the chip was reset (lost power) since boot
         uint32_t errors = 0;         // failed transfers since boot, searches for an absent chip included
         TmcError lastError = TmcError::None;  // why the last one failed
+        TmcFound found = TmcFound::Stopped;   // what the last search found
     };
 
     // The fields every chip has, from its map (for the chips' classes).
@@ -94,8 +104,9 @@ public:
         TmcField version;  // in IOIN
         uint8_t expectedVersion;
         TmcField reset, drvErr;  // GSTAT
+        TmcField enn;            // in IOIN: the enable pin, high when disabled
         TmcField shaft;          // GCONF
-        TmcField tpwmthrs;
+        TmcField tstep, tpwmthrs;
         TmcField toff, hstrt, hend, tbl, mres, intpol;  // CHOPCONF
         TmcField stst, stealth, csActual, ot, otpw, s2ga, s2gb, s2vsa, s2vsb, ola, olb;  // DRV_STATUS
         TmcField sgResult;
@@ -203,6 +214,17 @@ protected:
     // the motor keeps its speed.
     virtual bool canChangeResolution() const { return true; }
     virtual void rescale(float factor) { (void)factor; }
+    // Control task, when a search finds the chip turning, enabled, after its
+    // registers were read: its velocity in full steps/s, signed. False when
+    // the direction can't be told. It may read the chip again.
+    virtual bool measure(float& fullStepsPerSecond) {
+        (void)fullStepsPerSecond;
+        return false;
+    }
+    // Under the lock: the chip's own ramp starts at an adopted velocity.
+    virtual void adopt(float microstepsPerSecond) { (void)microstepsPerSecond; }
+    // Under the lock: the microsteps the chip's MRES holds now.
+    uint16_t chipMicrosteps() const;
 
     // The register copy, under the lock.
     uint32_t reg(uint8_t address) const { return shadow_[address & 0x7F]; }
@@ -249,8 +271,9 @@ private:
     // Control task: one register into reads_; false (and counted) on a
     // failure.
     bool read(uint8_t address, uint64_t nowUs);
-    // Under the lock: marks the registers a configuration writes.
-    void configure();
+    // Under the lock: marks the registers a configuration writes; a chip
+    // found turning is adopted at `fullStepsPerSecond`.
+    void configure(TmcFound found, float fullStepsPerSecond);
     void applySettings();
     // Under the lock: `settings.microsteps` into applied_, if it changed and
     // may.

@@ -64,6 +64,7 @@ protected:
     // Only at standstill: the ramp generator's own velocity can't be
     // rescaled.
     bool canChangeResolution() const override;
+    bool measure(float& fullStepsPerSecond) override;
 
 private:
     bool transfer(uint8_t first, uint32_t data, uint32_t& reply);

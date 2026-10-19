@@ -36,12 +36,19 @@ void TmcDriver::begin() {
         const TmcRegisterInfo& r = map_.registers[i];
         shadow_[r.address & 0x7F] = r.preset;
     }
+    // The chip is read before the enable pin is touched: one that turns
+    // through the ESP's reset is adopted, not stopped (and braked against
+    // the rotor when enabled again).
+    bool on = connect();
     if (enablePin_ >= 0) {
-        // High: disabled, until the first tick says otherwise.
-        (gpio_ ? *gpio_ : defaultGpio()).output(enablePin_, true);
-        enableLevel_ = 1;
+        {
+            Guard g(lock());
+            on = on && enabled_;
+        }
+        // DRV_ENN is active low: high disables.
+        (gpio_ ? *gpio_ : defaultGpio()).output(enablePin_, !on);
+        enableLevel_ = on ? 0 : 1;
     }
-    connect();
 }
 
 bool TmcDriver::identify() {
@@ -72,11 +79,11 @@ bool TmcDriver::connect() {
         errors_++;
         return false;
     }
-    // What the chip holds in the registers nothing will write: its status,
-    // its position.
+    // What the chip holds in the registers nothing wrote: its status, its
+    // position, and whether it turns.
     for (size_t i = 0; i < map_.registerCount; i++) {
         const TmcRegisterInfo& r = map_.registers[i];
-        if (!r.readable() || r.configure) continue;
+        if (!r.readable()) continue;
         {
             Guard g(lock());
             if (isSet(dirty_, r.address)) continue;
@@ -91,11 +98,23 @@ bool TmcDriver::connect() {
         Guard g(lock());
         shadow_[r.address & 0x7F] = v;
     }
+    // A chip that kept its power (no reset flag) and turns.
+    TmcFound found = TmcFound::Stopped;
+    float fullSteps = 0;
+    bool turning, on;
+    {
+        Guard g(lock());
+        bool kept = get(common_.reset) == 0;
+        bool moving = get(common_.stst) == 0 && get(common_.tstep) < 0xFFFFF;
+        on = get(common_.toff) != 0 && get(common_.enn) == 0 && drives();
+        turning = kept && moving;
+    }
+    if (turning) found = on && measure(fullSteps) ? TmcFound::Turning : TmcFound::Coasting;
     Write writes[kMaxWrites + 2], clears[kMaxClears];
     size_t n, clearCount;
     {
         Guard g(lock());
-        configure();
+        configure(found, fullSteps);
         applySettings();
         n = take(writes, kMaxWrites, clears, clearCount);
         present_ = true;
@@ -107,7 +126,8 @@ bool TmcDriver::connect() {
     return true;
 }
 
-void TmcDriver::configure() {
+void TmcDriver::configure(TmcFound found, float fullStepsPerSecond) {
+    uint16_t chip = chipMicrosteps();
     for (size_t i = 0; i < map_.registerCount; i++) {
         const TmcRegisterInfo& r = map_.registers[i];
         if (!r.configure) continue;
@@ -118,11 +138,33 @@ void TmcDriver::configure() {
     for (size_t i = 0; i < 4; i++) pending_[i] |= dirty_[i];
     clearCount_ = 0;
     clears_[clearCount_++] = {common_.reset.reg, kGstatFlags};
-    // A chip that was reset lost its position: it starts disabled, as at
-    // boot.
+    status_.found = found;
+    if (found == TmcFound::Turning) {
+        // It goes on at the velocity it had, until the deadman: the
+        // application renews it, or it stops (on the ramp, if any).
+        enabled_ = true;
+        drive_ = Drive::Velocity;
+        velocity_ = fullStepsPerSecond * static_cast<float>(applied_);
+        velocityWritten_ = true;
+        adopt(velocity_);
+        if (chip != applied_) {
+            // The resolution changes with it: the slower write first.
+            ordered_[0] = applied_ < chip ? velocityRegister() : common_.mres.reg;
+            ordered_[1] = applied_ < chip ? common_.mres.reg : velocityRegister();
+            orderedCount_ = 2;
+        }
+        return;
+    }
+    // Otherwise it starts disabled, as at boot: a chip that was reset lost
+    // its position.
     enabled_ = false;
     drive_ = Drive::Hold;
     velocity_ = 0;
+}
+
+uint16_t TmcDriver::chipMicrosteps() const {
+    int32_t mres = get(common_.mres);
+    return static_cast<uint16_t>(256u >> (mres > 8 ? 8 : mres));
 }
 
 void TmcDriver::applySettings() {

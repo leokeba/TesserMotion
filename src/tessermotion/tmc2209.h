@@ -60,6 +60,8 @@ protected:
     float measuredVelocity() const override;
     uint8_t velocityRegister() const override;
     void rescale(float factor) override;
+    bool measure(float& fullStepsPerSecond) override;
+    void adopt(float microstepsPerSecond) override;
 
 private:
     void drain();
