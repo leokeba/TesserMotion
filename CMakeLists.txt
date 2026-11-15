@@ -43,10 +43,10 @@ if(ESP_PLATFORM)
     endif()
     # The drivers left "driver" in ESP-IDF 5.3.
     if(IDF_VERSION_MAJOR GREATER 5 OR (IDF_VERSION_MAJOR EQUAL 5 AND IDF_VERSION_MINOR GREATER_EQUAL 3))
-        set(TESSERMOTION_BUS_REQS esp_driver_i2c esp_driver_spi)
+        set(TESSERMOTION_BUS_REQS esp_driver_i2c esp_driver_spi esp_driver_rmt)
         set(TESSERMOTION_DRIVER_REQS esp_driver_gpio esp_driver_ledc esp_driver_uart)
     else()
-        set(TESSERMOTION_BUS_REQS driver)
+        set(TESSERMOTION_BUS_REQS driver)  # rmt_tx.h is in it too
         set(TESSERMOTION_DRIVER_REQS "")
     endif()
     idf_component_register(
@@ -57,6 +57,7 @@ if(ESP_PLATFORM)
              src/tessermotion/platform/esp/spi_bus.cpp
              src/tessermotion/platform/esp/task_esp.cpp
              src/tessermotion/platform/esp/uart_port.cpp
+             src/tessermotion/platform/esp/pulse_rmt.cpp
         INCLUDE_DIRS "src"
         REQUIRES ${TESSERMOTION_BUS_REQS}  # i2c_bus.h and spi_bus.h include driver/i2c_master.h, driver/spi_master.h
         PRIV_REQUIRES ${TESSERMOTION_DRIVER_REQS} esp_timer log)
