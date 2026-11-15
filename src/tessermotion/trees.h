@@ -9,6 +9,7 @@
 #include "tessermotion/axis.h"
 #include "tessermotion/motion.h"
 #include "tessermotion/nmea_gps.h"
+#include "tessermotion/step_dir.h"
 #include "tessermotion/tilt.h"
 #include "tessermotion/tmc2209.h"
 #include "tessermotion/tmc5160.h"
@@ -21,6 +22,8 @@ void describe(tesser::Object& o, Tilt& tilt);
 void describe(tesser::Object& o, NmeaGps& gps);
 void describe(tesser::Object& o, Tmc5160& driver);
 void describe(tesser::Object& o, Tmc2209& driver);
+void describe(tesser::Object& o, StepDirMotor& motor);
+void describe(tesser::Object& o, StepDirGroup& group);
 
 // A Trinamic chip's register map as JSON, as the trees' `map` file serves it
 // (docs/DESIGN.md section 4.8).

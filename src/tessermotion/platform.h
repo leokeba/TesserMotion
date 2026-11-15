@@ -73,6 +73,36 @@ public:
     virtual bool write(const uint8_t* buf, size_t len) = 0;
 };
 
+// Who gives a pulse train its periods (docs/DESIGN.md section 4.9).
+class PulseSource {
+public:
+    virtual ~PulseSource() = default;
+    // Writes up to `max` periods, in the output's ticks, for the pulses that
+    // follow. 0 ends the train. The platform calls it ahead of the output,
+    // from its refill (an interrupt on ESP): no blocking, no allocation.
+    virtual size_t nextPeriods(uint32_t* ticks, size_t max) = 0;
+};
+
+// A square-wave output for step inputs: one pulse per period, high for a
+// fixed number of ticks. Periods come from a PulseSource, which the output
+// asks for in chunks, so a ramp changes the period on every pulse without a
+// call per pulse from the application.
+class PulseOutput {
+public:
+    virtual ~PulseOutput() = default;
+    // Sets the output up on `pin`: ticks at `tickHz`, pulses `highTicks` long.
+    // May run again.
+    virtual bool begin(int pin, uint32_t tickHz, uint32_t highTicks) = 0;
+    // Plays `source` from now; false if a train still plays.
+    virtual bool start(PulseSource& source) = 0;
+    // True while a train plays (including pulses already queued after the
+    // source ended it).
+    virtual bool running() = 0;
+    // Ends the train at once and holds the output low. Once it returns, the
+    // source is not called again, so the caller may change its state.
+    virtual void stop() = 0;
+};
+
 // The chip's GPIO and LEDC, used by drivers given none (tests give fakes).
 Gpio& defaultGpio();
 Pwm& defaultPwm();

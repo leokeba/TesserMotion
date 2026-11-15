@@ -103,6 +103,22 @@ void reset() {
     task = Task();
 }
 
+size_t PulseOutput::pump(size_t n) {
+    size_t total = 0;
+    while (total < n && source) {
+        uint32_t chunk[8];
+        const size_t want = n - total < 8 ? n - total : 8;
+        const size_t got = source->nextPeriods(chunk, want);
+        if (got == 0) {
+            source = nullptr;  // the train ends
+            break;
+        }
+        for (size_t i = 0; i < got; i++) periods.push_back(chunk[i]);
+        total += got;
+    }
+    return total;
+}
+
 }  // namespace fake
 
 namespace tessermotion {

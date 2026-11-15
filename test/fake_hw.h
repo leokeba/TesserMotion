@@ -113,6 +113,41 @@ struct Uart : tessermotion::Uart {
     void send(const std::string& bytes) { rx += bytes; }
 };
 
+// A step output. start() plays a source; pump() takes its periods, as the
+// platform's refill does in chunks, and records each pulse's period. A train
+// ends with the source's 0 (a real output keeps its queued pulses a little
+// longer: here they are taken at once).
+struct PulseOutput : tessermotion::PulseOutput {
+    int pin = -1;
+    uint32_t tickHz = 0;
+    uint32_t highTicks = 0;
+    bool began = false;
+    tessermotion::PulseSource* source = nullptr;
+    std::vector<uint32_t> periods;  // every pulse so far, in order
+    uint32_t starts = 0, stops = 0;
+
+    bool begin(int p, uint32_t hz, uint32_t high) override {
+        pin = p;
+        tickHz = hz;
+        highTicks = high;
+        began = true;
+        return true;
+    }
+    bool start(tessermotion::PulseSource& s) override {
+        if (source) return false;
+        source = &s;
+        starts++;
+        return true;
+    }
+    bool running() override { return source != nullptr; }
+    void stop() override {
+        source = nullptr;
+        stops++;
+    }
+    // Takes up to `n` periods from the source; returns how many it got.
+    size_t pump(size_t n);
+};
+
 // What defaultGpio() and defaultPwm() return on the host.
 extern Gpio gpio;
 extern Pwm pwm;

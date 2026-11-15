@@ -97,6 +97,7 @@ Narrow interfaces in `src/tessermotion/platform.h`, an ESP implementation in `sr
 | `I2c` | `begin()` (idempotent: every device on the bus calls it), `read(addr, reg, buf, len)`, `write(addr, reg, buf, len)`, `recover()` | `I2cBus`, on `driver/i2c_master.h` (§7.1) |
 | `Spi` | `begin()` (idempotent), `transfer(device, tx, rx, len)`, a device being its chip select, mode and clock | `SpiBus`, on `driver/spi_master.h` (§7.4) |
 | `Uart` | `begin()`, non-blocking `read(buf, max) → n`, `read(buf, len, timeoutMs) → n` (waits for `len` bytes), `write(buf, len)` | `UartPort`, on `driver/uart.h` (§7.3) |
+| `PulseOutput` | `begin(pin, tickHz, highTicks)`, `start(source)`, `running()`, `stop()`; a `PulseSource` gives each pulse's period in ticks, in chunks | `RmtPulseOutput`, on `driver/rmt_tx.h` with a simple callback encoder (§4.9) |
 | `Lock` | `lock()`, `unlock()`; recursive | a static FreeRTOS recursive mutex; `std::recursive_mutex` on the host |
 | `startPeriodic(task, periodUs, tick)`, `nowUs()` | free functions: the control task and the clock | `xTaskCreatePinnedToCore` with `vTaskDelayUntil`; `esp_timer_get_time()` |
 
@@ -271,6 +272,32 @@ A Trinamic chip has tens of registers and hundreds of fields: 62 registers and 1
 - **Access:** `read`, `write`, `readWrite` and `readClear` (flags cleared by writing 1). The TMC5160's `INP_OUT` reads `IOIN` and writes `OUTPUT`. Presets: TMC-API's sample configuration (written by a configuration, §4.7), or a write-only register's reset value (the `MSLUT` words, `PWMCONF`: shown, not written), or 0.
 - **In the tree:** `registers`, a keyed list (one node at rest: its elements are built per request), each register's name, address, access, value and decoded `fields` (`toff=3 hstrt=4 ...`), with a `write` action that takes the whole value. Writing needs an admin (`writeAccess`, TesserAPI §13.1), and `OTP_PROG` is never written: it burns the chip's fuses. Register writes aren't persisted. And `map`, a file node streaming the map as JSON (a register at a time: the TMC5160's is 14 KB), for a register editor that decodes and edits fields: a TesserUI element *(later)*, built against `fixtures/tmc5160_map.json` and `fixtures/tmc2209_map.json`.
 - **Cost,** computed from the tables (not yet measured, §10): about 5 KB of flash for the TMC5160's map (2.3 KB of names, 20 bytes a register, 8 a field) and 2 KB for the TMC2209's, linked with the driver, which goes through the table to read registers in turn. The driver's copy of the registers is 512 bytes of RAM.
+
+### 4.9 Motion drives and step and direction motors
+
+`MotionDrive` (`motion_drive.h`) is the motion every drive has: `enable`, `setVelocity` (signed, the deadman), `ramp.acceleration`, `hold`, `actualVelocity`, `velocity`, `microsteps`, `claim`/`release`, `present`. `TmcDriver` (the TMC2209 through its VACTUAL, §4.7) is one, through `Tmc2209`, which derives from both; an application takes a `MotionDrive&` and needs no more. The TMC5160 is not one: strapped for step and direction it can't turn at a velocity, and its own velocity mode is reached through `TmcDriver` only.
+
+A step and direction motor pairs a `StepDirMotor` with a TMC5160 strapped for step and direction (`SD_MODE` high, its motion off), whose SPI configuration (§4.7) it uses unchanged: its `microsteps` (MRES) is the STEP's resolution, and its power stage (TOFF) follows the enable.
+
+```cpp
+RmtPulseOutput out1, out2;                                    // ESP
+Tmc5160 chip1(spi, Tmc5160Config{.cs = 5, .enable = -1});     // EN is the group's
+Tmc5160 chip2(spi, Tmc5160Config{.cs = 6, .enable = -1});
+StepDirGroup group(22);                                       // the shared EN line
+StepDirMotor motor1(out1, chip1, group, StepDirConfig{.step = 21, .dir = 18});
+StepDirMotor motor2(out2, chip2, group, StepDirConfig{.step = 4, .dir = 15});
+// motion.add(group), chips, motors; group.add(motor1), group.add(motor2)
+```
+
+- **The shared enable.** `StepDirGroup` owns EN (active low) and enables every motor it holds: `enable(true)` on one motor enables them all, and so does the tree's `enabled`. Each chip's `enable` is -1 (its own pin is the group's), so its power stage (TOFF) follows the group's calls alone. A motor's stop, and a disable, end its train at once (`PulseOutput::stop`) before EN goes high. At most 4 motors per group.
+- **The ramp, per pulse.** The planner (`StepPlanner`, host-tested) takes the period of each pulse from the speed, and moves the speed toward the goal by the acceleration over that period: `v += a·T`, from rest at `T = √(2/a)` for the first pulse. The period is the pulse's, in ticks of the output's clock (10 MHz on ESP: 0.1 µs), at least `highTicks + 2`, at most 1 s (a speed below 1 µstep/s pulses once a second). Velocities are whole µsteps/s, clamped to `maxSpeed` (51 200 by default).
+- **The output asks for periods in chunks.** `PulseWords` (host-tested) turns the periods into RMT words: a pulse is a high part of `highTicks` (2 µs), then low words of two durations of up to 32 767 ticks, none zero. The RMT's simple callback encoder calls it from its refill (an interrupt on ESP), a block at a time (`mem_block_symbols` 64 on the ESP32), so no call runs per step. A train plays until the planner reaches rest with a goal of rest.
+- **Direction.** DIR changes only at rest: a velocity against the train's direction first brakes to 0 (the train ends), then `DIR` is set, and the first pulse waits for `dirSetupUs` (50 µs) in a later tick. The DIR level is `invert`-flipped.
+- **Velocity and deadman.** A velocity not renewed for `deadmanMs` (1 s) brakes to a stop, as the TMC2209's does. `hold()` brakes to 0 and stays enabled. `actualVelocity()` is the planner's speed, signed, as the refill last left it.
+- **Refusals.** `setVelocity` is refused unless the group is enabled and the chip answers. A running train isn't checked against the chip: step and direction gives it no feedback, so a chip that stops answering mid-run goes on until the deadman.
+- **Platform contract.** `PulseOutput::stop()` returns once the source is no longer called (ESP: the queued pulses, a block at most, play out first). The motor changes its planner only after that.
+- **Tree:** `enabled`, `velocity`, `stop`, `actualVelocity`, `microsteps`, `present`, `owner` (claims as §4.3), `settings` (`maxSpeed`, `deadmanMs`, `dirSetupUs`) and `ramp/acceleration`. The group's tree: `enabled`.
+- **Not built:** a step count or position (no encoder); MCPWM; the TMC5160's own ramp in step and direction mode (it has none there); a stepper axis in degrees (§13). Hardware: not run. A hardware run needs Leo's go-ahead, as enabling energizes the motor.
 
 ## 5. Sequencer *(later)*
 
@@ -584,7 +611,7 @@ TesserMotion/
 
 | Item | For |
 |---|---|
-| Steppers: `StepperAxis` (degrees, on a driver of §4.7, with an encoder for closed loop), a step generator for step and direction inputs (RMT or MCPWM; spin-seq drives its TMC5160 by step and direction, through FastAccelStepper), and an automatic calibration feeding §4.2's correction (steps as references, both directions to cancel backlash; it replaces spin-seq's 128-point linearization table) | spin-seq, TesserKIT phase 4 |
+| Steppers: `StepperAxis` (degrees, on a driver of §4.7 or a step and direction motor of §4.9, with an encoder for closed loop), and an automatic calibration feeding §4.2's correction (steps as references, both directions to cancel backlash; it replaces spin-seq's 128-point linearization table) | spin-seq, TesserKIT phase 4 |
 | A TesserUI register editor for §4.8's maps: fields decoded and edited from `map` (a gap report to TesserUI's agent) | commissioning Trinamic drivers |
 | Multi-turn angle sensors (unwrapped position, turns) | continuous rotation axes |
 | Other encoders: AS5600 (I2C), AS5048A (SPI) | other mechanics |

@@ -14,11 +14,14 @@ set(TESSERMOTION_CORE_SRCS
     src/tessermotion/tmc_driver.cpp
     src/tessermotion/tmc5160.cpp
     src/tessermotion/tmc2209.cpp
+    src/tessermotion/step_dir.cpp
+    src/tessermotion/pulse_words.cpp
     src/tessermotion/axis_tree.cpp
     src/tessermotion/motion_tree.cpp
     src/tessermotion/tilt_tree.cpp
     src/tessermotion/gps_tree.cpp
-    src/tessermotion/tmc_tree.cpp)
+    src/tessermotion/tmc_tree.cpp
+    src/tessermotion/step_dir_tree.cpp)
 
 if(ESP_PLATFORM)
     # TesserAPI is a hard dependency. Its component name depends on how it
