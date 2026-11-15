@@ -933,3 +933,25 @@ TEST(tmc5160_resumes_after_esp_reset) {
     CHECK_EQ(r.written(r51::vmax), 71583u);
     CHECK_EQ(r.written(r51::toff), 3u);
 }
+
+// The TMC2209 as a MotionDrive (docs/DESIGN.md section 4.9): the same calls
+// through the base, its ramp as the base's.
+TEST(tmc2209_is_a_motion_drive) {
+    Rig2209 r;
+    MotionDrive& drive = r.driver;
+    CHECK(drive.present());
+    drive.ramp.acceleration = 0;
+    CHECK(!drive.setVelocity(100));  // disabled
+    drive.enable(true);
+    CHECK(drive.enabled());
+    CHECK(drive.setVelocity(-200));
+    CHECK(drive.velocity() == -200);
+    CHECK(drive.microsteps() == 16);
+    CHECK(drive.owner().empty());
+    drive.claim("motophonique");
+    CHECK(drive.owner() == "motophonique");
+    drive.release();
+    drive.hold();
+    CHECK(drive.velocity() == 0);
+    CHECK(drive.enabled());
+}

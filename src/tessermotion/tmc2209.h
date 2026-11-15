@@ -14,6 +14,7 @@
 
 #include <stdint.h>
 
+#include "tessermotion/motion_drive.h"
 #include "tessermotion/tmc_driver.h"
 
 namespace tessermotion {
@@ -25,7 +26,8 @@ struct Tmc2209Config {
     uint32_t clockHz = 12000000;  // the chip's clock: 12 MHz internal
 };
 
-class Tmc2209 : public TmcDriver {
+// Its `ramp` (MotionDrive's) is the ramp the driver applies to VACTUAL.
+class Tmc2209 : public TmcDriver, public MotionDrive {
 public:
     static constexpr uint8_t kVersion = 0x21;
     // A reply comes within 1.1 ms at 115200 baud. The UART rounds the wait up
@@ -33,16 +35,22 @@ public:
     // that doesn't answer.
     static constexpr uint32_t kTimeoutMs = 10;
 
-    struct Ramp {
-        float acceleration = 0;  // µsteps/s², up and down; 0: jumps
-    };
-
     explicit Tmc2209(Uart& uart, const Tmc2209Config& config = Tmc2209Config(), Gpio* gpio = nullptr);
 
-    // Set before Motion starts, or under lock() afterwards (the tree does).
-    Ramp ramp;
-
     float maxCurrent() const override;
+
+    // MotionDrive: the TmcDriver's motion, as the drive's.
+    void enable(bool on) override { TmcDriver::enable(on); }
+    bool enabled() override { return TmcDriver::enabled(); }
+    bool setVelocity(float microstepsPerSecond) override { return TmcDriver::setVelocity(microstepsPerSecond); }
+    float velocity() override { return TmcDriver::velocity(); }
+    float actualVelocity() override { return TmcDriver::actualVelocity(); }
+    void hold() override { TmcDriver::hold(); }
+    uint16_t microsteps() override { return TmcDriver::microsteps(); }
+    void claim(const char* owner) override { TmcDriver::claim(owner); }
+    void release() override { TmcDriver::release(); }
+    std::string owner() override { return TmcDriver::owner(); }
+    bool present() override { return TmcDriver::present(); }
 
     // The datasheet's CRC-8 of a datagram's first `len` bytes.
     static uint8_t crc(const uint8_t* data, size_t len);
