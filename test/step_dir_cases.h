@@ -263,6 +263,19 @@ TEST(step_dir_deadman_stops_an_unrenewed_velocity) {
     CHECK(r.out1.running());
 }
 
+TEST(step_dir_keeps_velocity_when_tick_timestamp_predates_renewal) {
+    StepDirRig r;
+    r.motor1.enable(true);
+    CHECK(r.motor1.setVelocity(1000));
+
+    // Motion captures `now` before an earlier Part renews the velocity.
+    r.motor1.update(fake::now - 1);
+    CHECK_EQ(r.motor1.velocity(), 1000.0f);
+
+    r.tick();
+    CHECK(r.out1.running());
+}
+
 TEST(step_dir_group_shares_its_enable_line) {
     StepDirRig r;
     r.motor1.enable(true);

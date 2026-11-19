@@ -71,7 +71,9 @@ void StepDirMotor::begin() {
 
 void StepDirMotor::update(uint64_t now) {
     Guard g(lock());
-    if (velocity_ != 0 && now - renewedUs_ > static_cast<uint64_t>(settings.deadmanMs) * 1000) {
+    // setVelocity() can sample the clock after Motion captured this tick's `now`.
+    if (velocity_ != 0 && now >= renewedUs_ &&
+        now - renewedUs_ > static_cast<uint64_t>(settings.deadmanMs) * 1000) {
         velocity_ = 0;
         target_.store(0, std::memory_order_relaxed);
     }
