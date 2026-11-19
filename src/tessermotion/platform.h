@@ -79,7 +79,8 @@ public:
     virtual ~PulseSource() = default;
     // Writes up to `max` periods, in the output's ticks, for the pulses that
     // follow. 0 ends the train. The platform calls it ahead of the output,
-    // from its refill (an interrupt on ESP): no blocking, no allocation.
+    // from its refill (an interrupt on ESP): no blocking, no allocation, or
+    // floating point, since RMT callbacks may run with FPU use disabled.
     virtual size_t nextPeriods(uint32_t* ticks, size_t max) = 0;
 };
 

@@ -136,6 +136,17 @@ TEST(step_planner_jumps_without_acceleration) {
     CHECK(p.dir() == -1);
 }
 
+TEST(step_planner_rmt_refill_uses_fixed_point_ramp) {
+    StepPlanner p;
+    p.configure(51200, 10000000, 22);
+    p.start(1);
+    CHECK_EQ(p.next(853), 62500u);
+    CHECK_EQ(p.roundedSpeed(), 320);
+    for (int i = 0; i < 100; i++) p.next(853);
+    CHECK_EQ(p.roundedSpeed(), 853);
+    CHECK_EQ(p.next(853), 11723u);
+}
+
 TEST(step_planner_periods_at_the_longest_and_shortest) {
     StepPlanner p;
     p.configure(0, kPlannerHz, 2);

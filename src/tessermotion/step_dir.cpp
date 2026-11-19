@@ -13,45 +13,72 @@ int signOf(int32_t v) { return v > 0 ? 1 : (v < 0 ? -1 : 0); }
 }  // namespace
 
 void StepPlanner::configure(float acceleration, uint32_t tickHz, uint32_t minTicks) {
-    acceleration_ = acceleration > 0 ? acceleration : 0;
     tickHz_ = tickHz > 0 ? tickHz : 1;
     minTicks_ = minTicks > 0 ? minTicks : 1;
+    if (!(acceleration > 0)) acceleration = 0;
+    constexpr float kMaxAcceleration = 16777215.0f;
+    if (acceleration > kMaxAcceleration) acceleration = kMaxAcceleration;
+    accelerationQ8_ = static_cast<uint32_t>(acceleration * static_cast<float>(kSpeedScale) + 0.5f);
+    if (acceleration > 0 && accelerationQ8_ == 0) accelerationQ8_ = 1;
+    if (accelerationQ8_ == 0) {
+        firstPeriodTicks_ = 1;
+    } else {
+        const float effectiveAcceleration = static_cast<float>(accelerationQ8_) / static_cast<float>(kSpeedScale);
+        float period = sqrtf(2.0f / effectiveAcceleration);
+        if (period > kMaxPeriodS) period = kMaxPeriodS;
+        const float ticks = period * static_cast<float>(tickHz_);
+        firstPeriodTicks_ =
+            ticks >= 4294967295.0f ? UINT32_MAX : static_cast<uint32_t>(ticks + 0.5f);
+    }
 }
 
 void StepPlanner::start(int dir) {
-    speed_ = 0;
+    speedQ8_ = 0;
+    accelerationRemainder_ = 0;
     dir_ = dir > 0 ? 1 : -1;
 }
 
 uint32_t StepPlanner::next(int32_t target) {
     // The speed the train goes to: the target in its direction, else rest.
     const int64_t magnitude = target < 0 ? -static_cast<int64_t>(target) : static_cast<int64_t>(target);
-    const float goal = signOf(target) == dir_ ? static_cast<float>(magnitude) : 0.0f;
-    if (speed_ == 0 && goal == 0) return 0;
+    const uint64_t goal = signOf(target) == dir_ ? static_cast<uint64_t>(magnitude) * kSpeedScale : 0;
+    if (speedQ8_ == 0 && goal == 0) return 0;
     // From rest, without an acceleration, the speed jumps to the goal first.
-    if (speed_ == 0 && acceleration_ <= 0) speed_ = goal;
+    if (speedQ8_ == 0 && accelerationQ8_ == 0) speedQ8_ = goal;
 
     // The period of this pulse: from the speed, or from rest, the first pulse
     // at a distance of one µstep under the acceleration (t = √(2/a)).
-    float period = speed_ > 0 ? 1.0f / speed_ : sqrtf(2.0f / acceleration_);
-    if (period > kMaxPeriodS) period = kMaxPeriodS;
-    const float ticks = period * static_cast<float>(tickHz_);
-    const uint32_t out = ticks < static_cast<float>(minTicks_) ? minTicks_ : static_cast<uint32_t>(ticks + 0.5f);
+    uint32_t periodTicks = firstPeriodTicks_;
+    if (speedQ8_ > 0) {
+        const uint64_t ticks = (static_cast<uint64_t>(tickHz_) * kSpeedScale + speedQ8_ / 2) / speedQ8_;
+        periodTicks = ticks > tickHz_ ? tickHz_ : static_cast<uint32_t>(ticks);
+        if (periodTicks == 0) periodTicks = 1;
+    }
+    const uint32_t out = periodTicks < minTicks_ ? minTicks_ : periodTicks;
 
     // The speed after it: moved toward the goal by the acceleration over this
     // period, or jumped to it. A brake to rest keeps the train's direction
     // until it stops.
-    if (acceleration_ > 0) {
-        const float step = acceleration_ * period;
-        if (speed_ < goal) {
-            speed_ = speed_ + step < goal ? speed_ + step : goal;
-        } else if (speed_ > goal) {
-            speed_ = speed_ - step > goal ? speed_ - step : goal;
+    if (accelerationQ8_ > 0) {
+        const uint64_t numerator = static_cast<uint64_t>(accelerationQ8_) * periodTicks + accelerationRemainder_;
+        const uint64_t step = numerator / tickHz_;
+        accelerationRemainder_ = numerator % tickHz_;
+        if (speedQ8_ < goal) {
+            speedQ8_ = step < goal - speedQ8_ ? speedQ8_ + step : goal;
+        } else if (speedQ8_ > goal) {
+            speedQ8_ = step < speedQ8_ - goal ? speedQ8_ - step : goal;
         }
     } else {
-        speed_ = goal;
+        speedQ8_ = goal;
     }
     return out;
+}
+
+float StepPlanner::speed() const { return static_cast<float>(speedQ8_) / static_cast<float>(kSpeedScale); }
+
+int32_t StepPlanner::roundedSpeed() const {
+    const uint64_t rounded = (speedQ8_ + kSpeedScale / 2) / kSpeedScale;
+    return rounded > static_cast<uint64_t>(INT32_MAX) ? INT32_MAX : static_cast<int32_t>(rounded);
 }
 
 StepDirMotor::StepDirMotor(PulseOutput& output, TmcDriver& chip, StepDirGroup& group, const StepDirConfig& config,
@@ -167,8 +194,8 @@ size_t StepDirMotor::nextPeriods(uint32_t* ticks, size_t max) {
         if (period == 0) break;
         ticks[n++] = period;
     }
-    const float speed = planner_.speed() * static_cast<float>(planner_.dir());
-    actual_.store(static_cast<int32_t>(speed >= 0 ? speed + 0.5f : speed - 0.5f), std::memory_order_relaxed);
+    const int32_t speed = planner_.roundedSpeed() * planner_.dir();
+    actual_.store(speed, std::memory_order_relaxed);
     return n;
 }
 

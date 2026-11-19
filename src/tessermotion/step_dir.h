@@ -47,16 +47,24 @@ public:
     // train ends (at rest, with nothing to do).
     uint32_t next(int32_t target);
     // The speed magnitude, µsteps/s, and the train's direction.
-    float speed() const { return speed_; }
+    float speed() const;
+    // Rounded speed for the pulse refill; does not use floating point.
+    int32_t roundedSpeed() const;
     int dir() const { return dir_; }
     // Back at rest, without a period (after a stop).
-    void rest() { speed_ = 0; }
+    void rest() {
+        speedQ8_ = 0;
+        accelerationRemainder_ = 0;
+    }
 
 private:
-    float acceleration_ = 0;
+    static constexpr uint32_t kSpeedScale = 256;
+    uint32_t accelerationQ8_ = 0;
     uint32_t tickHz_ = 1;
     uint32_t minTicks_ = 1;
-    float speed_ = 0;
+    uint32_t firstPeriodTicks_ = 1;
+    uint64_t speedQ8_ = 0;
+    uint64_t accelerationRemainder_ = 0;
     int dir_ = 1;
 };
 
