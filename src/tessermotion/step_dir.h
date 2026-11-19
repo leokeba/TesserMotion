@@ -92,6 +92,8 @@ public:
     float actualVelocity() override;
     void hold() override;
     uint16_t microsteps() override;
+    bool pulseOutputReady() const { return outputReady_.load(std::memory_order_relaxed); }
+    uint32_t pulseStartFailures() const { return startFailures_.load(std::memory_order_relaxed); }
     void claim(const char* owner) override;
     void release() override;
     std::string owner() override;
@@ -120,6 +122,8 @@ private:
     // Target and actual velocity: written under the lock, read by the refill.
     std::atomic<int32_t> target_{0};
     std::atomic<int32_t> actual_{0};
+    std::atomic<bool> outputReady_{false};
+    std::atomic<uint32_t> startFailures_{0};
     // The refill's only.
     StepPlanner planner_;
 

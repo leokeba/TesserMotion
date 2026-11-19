@@ -64,7 +64,7 @@ StepDirMotor::StepDirMotor(PulseOutput& output, TmcDriver& chip, StepDirGroup& g
 
 void StepDirMotor::begin() {
     Guard g(lock());
-    output_.begin(config_.step, config_.tickHz, config_.highTicks);
+    outputReady_.store(output_.begin(config_.step, config_.tickHz, config_.highTicks), std::memory_order_relaxed);
     gpio_->output(config_.dir, (dir_ > 0) != config_.invert);
     dirSet_ = false;
 }
@@ -75,7 +75,7 @@ void StepDirMotor::update(uint64_t now) {
         velocity_ = 0;
         target_.store(0, std::memory_order_relaxed);
     }
-    if (!group_.enabled()) return;
+    if (!group_.enabled() || !outputReady_.load(std::memory_order_relaxed)) return;
     if (output_.running()) return;  // the train brakes to rest by itself
 
     // The train's acceleration, read when it starts (not while it plays).
@@ -94,7 +94,7 @@ void StepDirMotor::update(uint64_t now) {
     }
     if (now - dirSetUs_ < settings.dirSetupUs) return;
     planner_.start(dir_);
-    output_.start(*this);
+    if (!output_.start(*this)) startFailures_.fetch_add(1, std::memory_order_relaxed);
 }
 
 void StepDirMotor::rest() {

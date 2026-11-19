@@ -122,18 +122,22 @@ struct PulseOutput : tessermotion::PulseOutput {
     uint32_t tickHz = 0;
     uint32_t highTicks = 0;
     bool began = false;
+    bool beginOk = true;
+    bool startOk = true;
     tessermotion::PulseSource* source = nullptr;
     std::vector<uint32_t> periods;  // every pulse so far, in order
-    uint32_t starts = 0, stops = 0;
+    uint32_t starts = 0, startAttempts = 0, stops = 0;
 
     bool begin(int p, uint32_t hz, uint32_t high) override {
         pin = p;
         tickHz = hz;
         highTicks = high;
         began = true;
-        return true;
+        return beginOk;
     }
     bool start(tessermotion::PulseSource& s) override {
+        startAttempts++;
+        if (!startOk) return false;
         if (source) return false;
         source = &s;
         starts++;

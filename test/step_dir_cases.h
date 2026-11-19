@@ -43,7 +43,9 @@ struct StepDirRig {
     Motion motion;
     uint64_t now = 1000000;
 
-    StepDirRig() {
+    StepDirRig(bool pulseBeginOk = true, bool pulseStartOk = true) {
+        out1.beginOk = pulseBeginOk;
+        out1.startOk = pulseStartOk;
         driver1.settings.microsteps = 16;
         driver2.settings.microsteps = 16;
         chip1.stepDir = true;
@@ -225,6 +227,24 @@ TEST(step_dir_waits_for_its_setup_time) {
     CHECK(r.out1.running());
 }
 
+TEST(step_dir_reports_pulse_output_failures) {
+    StepDirRig beginFailure(false);
+    CHECK(!beginFailure.motor1.pulseOutputReady());
+    beginFailure.motor1.enable(true);
+    CHECK(beginFailure.motor1.setVelocity(1000));
+    beginFailure.tick(2);
+    CHECK_EQ(beginFailure.out1.startAttempts, 0u);
+    CHECK_EQ(beginFailure.motor1.pulseStartFailures(), 0u);
+
+    StepDirRig startFailure(true, false);
+    CHECK(startFailure.motor1.pulseOutputReady());
+    startFailure.motor1.enable(true);
+    CHECK(startFailure.motor1.setVelocity(1000));
+    startFailure.tick(2);
+    CHECK_EQ(startFailure.out1.startAttempts, 1u);
+    CHECK_EQ(startFailure.motor1.pulseStartFailures(), 1u);
+}
+
 TEST(step_dir_deadman_stops_an_unrenewed_velocity) {
     StepDirRig r;
     r.motor1.ramp.acceleration = 20000;
@@ -404,6 +424,8 @@ TEST(step_dir_tree) {
     CHECK_EQ(tesser::declarationErrors(), 0);
     CHECK_EQ(r.get("/a/present").body, "true");
     CHECK_EQ(r.get("/a/enabled").body, "false");
+    CHECK_EQ(r.get("/a/pulseOutputReady").body, "true");
+    CHECK_EQ(r.get("/a/pulseStartFailures").body, "0");
     CHECK(r.set("/a/velocity", "1000").status == tesser::Status::NotAllowed);
     CHECK(r.set("/a/enabled", "true").status == tesser::Status::Ok);
     CHECK_EQ(r.get("/group/enabled").body, "true");

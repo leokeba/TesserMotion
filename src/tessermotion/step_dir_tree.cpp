@@ -76,6 +76,10 @@ void describe(Object& o, StepDirMotor& m) {
         .watch()
         .ui("widget", "chart")
         .doc("The velocity now, from the pulses");
+    o.value("pulseOutputReady", [&m] { return m.pulseOutputReady(); })
+        .doc("Whether the pulse output initialized successfully");
+    o.value("pulseStartFailures", [&m] { return m.pulseStartFailures(); })
+        .doc("Pulse train start attempts rejected by the output");
     o.value("microsteps", [&m] { return static_cast<uint32_t>(m.microsteps()); })
         .doc("The resolution velocities count in: the chip's MRES, which is also its STEP's");
     o.value("present", [&m] { return m.present(); }).watch().doc("The chip answers");
