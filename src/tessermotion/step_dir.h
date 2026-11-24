@@ -40,12 +40,20 @@ public:
     // `acceleration` in µsteps/s² (0: speeds jump); `tickHz` the output's
     // clock; `minTicks` the shortest period.
     void configure(float acceleration, uint32_t tickHz, uint32_t minTicks);
+    // Configures a finite-move profile. All floating-point work is done here,
+    // before the pulse output starts.
+    void configureMove(float maxSpeed, float acceleration, float deceleration, uint32_t tickHz, uint32_t minTicks);
     // Starts a train in direction `dir` (±1) from rest.
     void start(int dir);
     // The period of the next pulse, in ticks, toward `target` (signed µsteps/s;
     // a target against the train's direction brakes it to rest first). 0: the
     // train ends (at rest, with nothing to do).
     uint32_t next(int32_t target);
+    // The period of the next pulse in a finite move with `stepsRemaining`
+    // pulses left, including this one. Returns 0 when none remain.
+    uint32_t nextMove(uint64_t stepsRemaining);
+    // Continues with a controlled deceleration to rest. Returns 0 at rest.
+    uint32_t nextStop();
     // The speed magnitude, µsteps/s, and the train's direction.
     float speed() const;
     // Rounded speed for the pulse refill; does not use floating point.
@@ -58,8 +66,13 @@ public:
     }
 
 private:
+    uint32_t nextToward(uint64_t goal, bool finiteMove);
+    static uint64_t integerSqrt(uint64_t value);
+
     static constexpr uint32_t kSpeedScale = 256;
     uint32_t accelerationQ8_ = 0;
+    uint32_t decelerationQ8_ = 0;
+    uint32_t maxSpeedQ8_ = 0;
     uint32_t tickHz_ = 1;
     uint32_t minTicks_ = 1;
     uint32_t firstPeriodTicks_ = 1;
@@ -78,6 +91,9 @@ struct StepDirConfig {
 
 class StepDirMotor : public MotionDrive, public Part, public PulseSource {
 public:
+    enum class MoveState : uint8_t { Idle, Running, Stopping, Complete, Cancelled, Interrupted, Failed };
+    static constexpr int64_t kPositionUnitsPerFullStep = 256;
+
     struct Settings {
         float maxSpeed = 51200;      // µsteps/s, the most a velocity can be
         uint32_t deadmanMs = 1000;   // a velocity not renewed for this long stops
@@ -98,6 +114,15 @@ public:
     bool setVelocity(float microstepsPerSecond) override;
     float velocity() override;
     float actualVelocity() override;
+    // Starts an exact, finite relative move in STEP pulses. The move is
+    // accepted only while enabled, present, idle, and position-valid.
+    bool moveRelative(int32_t steps, float maxSpeed, float acceleration, float deceleration);
+    // Canonical open-loop position in 1/256 full-step units, independent of MRES.
+    int64_t commandedPosition256();
+    bool commandedPositionValid();
+    MoveState moveState();
+    // A finite move decelerates and drains before returning its final position;
+    // velocity motion retains its usual ramp-to-zero behavior.
     void hold() override;
     uint16_t microsteps() override;
     bool pulseOutputReady() const { return outputReady_.load(std::memory_order_relaxed); }
@@ -120,6 +145,8 @@ private:
     friend class StepDirGroup;
     // Under the lock: the train stops and the motor rests (the group disabled).
     void rest();
+    void interruptMove();
+    void finishMove();
 
     PulseOutput& output_;
     TmcDriver& chip_;
@@ -130,10 +157,18 @@ private:
     // Target and actual velocity: written under the lock, read by the refill.
     std::atomic<int32_t> target_{0};
     std::atomic<int32_t> actual_{0};
+    std::atomic<bool> finiteMoveSource_{false};
+    std::atomic<bool> cancelMoveRequested_{false};
+    std::atomic<uint32_t> moveStepsGenerated_{0};
     std::atomic<bool> outputReady_{false};
     std::atomic<uint32_t> startFailures_{0};
     // The refill's only.
     StepPlanner planner_;
+    uint64_t moveStepsRemaining_ = 0;  // the refill's only
+    uint32_t moveStepsRequested_ = 0;  // under the lock
+    float moveMaxSpeed_ = 0;           // under the lock
+    float moveAcceleration_ = 0;       // under the lock
+    float moveDeceleration_ = 0;       // under the lock
 
     // Under the lock.
     float velocity_ = 0;       // as set
@@ -141,6 +176,15 @@ private:
     int dir_ = 1;              // the DIR pin's direction
     uint64_t dirSetUs_ = 0;    // when DIR was set
     bool dirSet_ = false;
+    bool moveActive_ = false;           // under the lock
+    bool moveOutputStarted_ = false;    // under the lock
+    int64_t moveDeltaPosition256_ = 0;  // under the lock
+    uint16_t moveMicrosteps_ = 0;       // MRES captured when the move is accepted
+    uint32_t movePositionUnitsPerStep_ = 0;
+    int moveDirection_ = 1;
+    int64_t commandedPosition256_ = 0;  // under the lock; zero at boot
+    bool commandedPositionValid_ = true;
+    MoveState moveState_ = MoveState::Idle;
     std::string owner_;
 };
 

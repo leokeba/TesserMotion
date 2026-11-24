@@ -24,7 +24,7 @@ public:
     // changing it.
     bool begin(int pin, uint32_t tickHz, uint32_t highTicks) override;
     bool start(PulseSource& source) override;
-    bool running() override { return running_.load(std::memory_order_relaxed); }
+    bool running() override { return running_.load(std::memory_order_acquire); }
     // Lets the pulses already in the channel's memory play (at most a block),
     // with the source not called again, then returns.
     void stop() override;

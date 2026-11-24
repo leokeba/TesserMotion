@@ -77,16 +77,16 @@ bool RmtPulseOutput::start(PulseSource& source) {
         ESP_LOGE(kTag, "RMT TX start requested before GPIO channel initialization");
         return false;
     }
-    if (running_.load()) return false;
+    if (running_.load(std::memory_order_acquire)) return false;
     source_ = &source;
     words_.reset();
     stopping_.store(false);
-    running_.store(true);
+    running_.store(true, std::memory_order_release);
     rmt_transmit_config_t transmit = {};
     transmit.loop_count = 0;
     const esp_err_t err = rmt_transmit(channel_, encoder_, &payload_, sizeof payload_, &transmit);
     if (err != ESP_OK) {
-        running_.store(false);
+        running_.store(false, std::memory_order_release);
         source_ = nullptr;
         ESP_LOGE(kTag, "RMT TX start: %s", esp_err_to_name(err));
         return false;
@@ -99,12 +99,12 @@ void RmtPulseOutput::stop() {
     stopping_.store(true);
     const esp_err_t err = rmt_tx_wait_all_done(channel_, 100);
     if (err != ESP_OK) ESP_LOGE(kTag, "RMT TX stop: %s", esp_err_to_name(err));
-    running_.store(false);
+    running_.store(false, std::memory_order_release);
     source_ = nullptr;
 }
 
 bool IRAM_ATTR RmtPulseOutput::onDone(rmt_channel_handle_t, const rmt_tx_done_event_data_t*, void* arg) {
-    static_cast<RmtPulseOutput*>(arg)->running_.store(false);
+    static_cast<RmtPulseOutput*>(arg)->running_.store(false, std::memory_order_release);
     return false;
 }
 

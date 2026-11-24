@@ -147,6 +147,31 @@ TEST(step_planner_rmt_refill_uses_fixed_point_ramp) {
     CHECK_EQ(p.next(853), 11723u);
 }
 
+TEST(step_planner_finite_move_is_exact_and_obeys_both_rates) {
+    StepPlanner p;
+    p.configureMove(800, 1200, 4000, kPlannerHz, 2);
+    p.start(1);
+    std::vector<uint32_t> periods;
+    for (uint64_t left = 1000; left > 0; --left) {
+        const uint32_t period = p.nextMove(left);
+        CHECK(period >= 2);
+        periods.push_back(period);
+    }
+    CHECK_EQ(periods.size(), 1000u);
+    CHECK_EQ(p.nextMove(0), 0u);
+    CHECK(p.speed() == 0);
+    CHECK(periods.front() > periods[100]);  // acceleration
+    CHECK(periods[500] <= periods[100]);
+    CHECK(periods.back() > periods[periods.size() - 100]);  // deceleration
+
+    StepPlanner one;
+    one.configureMove(800, 1200, 4000, kPlannerHz, 2);
+    one.start(-1);
+    CHECK(one.nextMove(1) > 0);
+    CHECK(one.speed() == 0);
+    CHECK_EQ(one.nextMove(0), 0u);
+}
+
 TEST(step_planner_periods_at_the_longest_and_shortest) {
     StepPlanner p;
     p.configure(0, kPlannerHz, 2);
@@ -221,6 +246,110 @@ TEST(step_dir_ramps_through_zero_and_changes_direction_at_rest) {
     r.out1.pump(300);
     CHECK(r.out1.periods.size() == before + 300);
     CHECK(r.motor1.actualVelocity() < 0);
+}
+
+TEST(step_dir_relative_moves_commit_exact_open_loop_endpoints) {
+    StepDirRig r;
+    r.motor1.enable(true);
+    CHECK(r.motor1.commandedPositionValid());
+    CHECK_EQ(r.motor1.commandedPosition256(), 0);
+    CHECK(r.motor1.moveRelative(1000, 800, 1200, 4000));
+    CHECK(r.motor1.moveState() == StepDirMotor::MoveState::Running);
+    CHECK_EQ(r.motor1.commandedPosition256(), 0);  // not committed until drained
+    CHECK(!r.motor1.moveRelative(1, 100, 1000, 1000));
+
+    r.tick(2);
+    CHECK(r.out1.running());
+    CHECK_EQ(r.out1.pump(2000), 1000u);
+    CHECK(!r.out1.running());
+    CHECK(r.motor1.moveState() == StepDirMotor::MoveState::Running);
+    CHECK_EQ(r.motor1.commandedPosition256(), 0);
+    r.tick();
+    CHECK(r.motor1.moveState() == StepDirMotor::MoveState::Complete);
+    CHECK_EQ(r.motor1.commandedPosition256(), 16000);
+    CHECK(r.motor1.commandedPositionValid());
+    CHECK(r.motor1.actualVelocity() == 0);
+
+    r.driver1.setMicrosteps(32);
+    CHECK_EQ(r.motor1.microsteps(), 32u);
+    r.out1.periods.clear();
+    CHECK(r.motor1.moveRelative(-2000, 600, 2000, 8000));
+    r.tick(2);
+    CHECK(r.out1.running());
+    CHECK_EQ(r.out1.pump(3000), 2000u);
+    r.tick();
+    CHECK(r.motor1.moveState() == StepDirMotor::MoveState::Complete);
+    CHECK_EQ(r.motor1.commandedPosition256(), 0);
+}
+
+TEST(step_dir_hold_decelerates_relative_move_and_keeps_commanded_position_valid) {
+    StepDirRig r;
+    r.motor1.enable(true);
+    CHECK(r.motor1.moveRelative(500, 300, 1000, 1000));
+    r.tick(2);
+    CHECK(r.out1.running());
+    CHECK(r.out1.pump(10) > 0);
+    const uint32_t stopsBefore = r.out1.stops;
+    r.motor1.hold();
+    CHECK(r.motor1.moveState() == StepDirMotor::MoveState::Stopping);
+    CHECK_EQ(r.out1.stops, stopsBefore);
+    CHECK_EQ(r.motor1.commandedPosition256(), 0);
+    CHECK(r.out1.pump(100000) > 0);
+    CHECK(!r.out1.running());
+    CHECK_EQ(r.motor1.commandedPosition256(), 0);  // completion is observed by update()
+    r.tick();
+    CHECK(r.motor1.moveState() == StepDirMotor::MoveState::Cancelled);
+    CHECK(r.motor1.commandedPositionValid());
+    CHECK(r.motor1.commandedPosition256() > 0);
+    CHECK(r.motor1.commandedPosition256() < 500 * StepDirMotor::kPositionUnitsPerFullStep / 16);
+    CHECK(r.motor1.moveRelative(-10, 100, 100, 100));
+}
+
+TEST(step_dir_disable_interrupts_relative_move_and_invalidates_position) {
+    StepDirRig r;
+    r.motor1.enable(true);
+    CHECK(r.motor1.moveRelative(500, 300, 1000, 1000));
+    r.tick(2);
+    CHECK(r.out1.running());
+    CHECK(r.out1.pump(10) > 0);
+    r.motor1.enable(false);
+    CHECK(r.motor1.moveState() == StepDirMotor::MoveState::Interrupted);
+    CHECK(!r.motor1.commandedPositionValid());
+    CHECK_EQ(r.motor1.commandedPosition256(), 0);
+}
+
+TEST(step_dir_mres_change_during_relative_move_interrupts_and_invalidates_position) {
+    StepDirRig r;
+    r.motor1.enable(true);
+    CHECK(r.motor1.moveRelative(500, 300, 1000, 1000));
+    r.tick(2);
+    CHECK(r.out1.running());
+    CHECK(r.out1.pump(10) > 0);
+    r.driver1.setMicrosteps(32);
+    r.tick();
+    CHECK(r.motor1.moveState() == StepDirMotor::MoveState::Interrupted);
+    CHECK(!r.motor1.commandedPositionValid());
+    CHECK_EQ(r.motor1.commandedPosition256(), 0);
+    CHECK(!r.out1.running());
+}
+
+TEST(step_dir_relative_move_start_failure_is_observable) {
+    StepDirRig r(true, false);
+    r.motor1.enable(true);
+    CHECK(r.motor1.moveRelative(10, 100, 100, 100));
+    r.tick(2);
+    CHECK(r.motor1.moveState() == StepDirMotor::MoveState::Failed);
+    CHECK(r.motor1.commandedPositionValid());
+    CHECK_EQ(r.motor1.commandedPosition256(), 0);
+    CHECK_EQ(r.motor1.pulseStartFailures(), 1u);
+}
+
+TEST(step_dir_velocity_mode_invalidates_relative_command_position) {
+    StepDirRig r;
+    r.motor1.enable(true);
+    CHECK(r.motor1.commandedPositionValid());
+    CHECK(r.motor1.setVelocity(100));
+    CHECK(!r.motor1.commandedPositionValid());
 }
 
 TEST(step_dir_waits_for_its_setup_time) {
@@ -439,6 +568,7 @@ struct StepDirTreeRig : StepDirRig {
     }
     Reply get(const std::string& path) { return request(tesser::Op::Get, path); }
     Reply set(const std::string& path, const std::string& body) { return request(tesser::Op::Set, path, body); }
+    Reply action(const std::string& path, const std::string& body) { return request(tesser::Op::Set, path, body); }
 };
 
 }  // namespace
@@ -450,6 +580,9 @@ TEST(step_dir_tree) {
     CHECK_EQ(r.get("/a/enabled").body, "false");
     CHECK_EQ(r.get("/a/pulseOutputReady").body, "true");
     CHECK_EQ(r.get("/a/pulseStartFailures").body, "0");
+    CHECK_EQ(r.get("/a/commandedPosition256").body, "0");
+    CHECK_EQ(r.get("/a/commandedPositionValid").body, "true");
+    CHECK_EQ(r.get("/a/moveState").body, "\"idle\"");
     CHECK(r.set("/a/velocity", "1000").status == tesser::Status::NotAllowed);
     CHECK(r.set("/a/enabled", "true").status == tesser::Status::Ok);
     CHECK_EQ(r.get("/group/enabled").body, "true");
@@ -464,4 +597,19 @@ TEST(step_dir_tree) {
     CHECK(r.set("/a/velocity", "500").status == tesser::Status::Ok);
     CHECK(r.set("/a/ramp/acceleration", "20000").status == tesser::Status::Ok);
     CHECK_EQ(r.get("/a/ramp/acceleration").body, "20000");
+}
+
+TEST(step_dir_relative_move_tree_action_and_observations) {
+    StepDirTreeRig r;
+    CHECK(r.set("/a/enabled", "true").status == tesser::Status::Ok);
+    CHECK(r.action("/a/moveRelative", "{\"steps\":12,\"maxSpeed\":200,\"acceleration\":500,\"deceleration\":800}")
+              .status == tesser::Status::Ok);
+    CHECK_EQ(r.get("/a/moveState").body, "\"running\"");
+    CHECK_EQ(r.get("/a/commandedPosition256").body, "0");
+    r.tick(2);
+    CHECK_EQ(r.out1.pump(100), 12u);
+    r.tick();
+    CHECK_EQ(r.get("/a/moveState").body, "\"complete\"");
+    CHECK_EQ(r.get("/a/commandedPosition256").body, "192");
+    CHECK_EQ(r.get("/a/commandedPositionValid").body, "true");
 }
