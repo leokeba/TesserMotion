@@ -382,6 +382,18 @@ bool StepDirMotor::commandedPositionValid() {
     return commandedPositionValid_;
 }
 
+bool StepDirMotor::zeroCommandedPosition() {
+    Guard g(lock());
+    if (!group_.enabled() || moveActive_ || velocity_ != 0 ||
+        target_.load(std::memory_order_relaxed) != 0 || actual_.load(std::memory_order_relaxed) != 0 ||
+        finiteMoveSource_.load(std::memory_order_relaxed) || output_.running()) {
+        return false;
+    }
+    commandedPosition256_ = 0;
+    commandedPositionValid_ = true;
+    return true;
+}
+
 StepDirMotor::MoveState StepDirMotor::moveState() {
     Guard g(lock());
     return moveState_;

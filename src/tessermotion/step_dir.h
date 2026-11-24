@@ -120,6 +120,9 @@ public:
     // Canonical open-loop position in 1/256 full-step units, independent of MRES.
     int64_t commandedPosition256();
     bool commandedPositionValid();
+    // Asserts the current shaft position is zero without moving the motor.
+    // Accepted only while enabled and fully idle.
+    bool zeroCommandedPosition();
     MoveState moveState();
     // A finite move decelerates and drains before returning its final position;
     // velocity motion retains its usual ramp-to-zero behavior.

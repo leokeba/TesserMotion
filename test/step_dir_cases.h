@@ -352,6 +352,56 @@ TEST(step_dir_velocity_mode_invalidates_relative_command_position) {
     CHECK(!r.motor1.commandedPositionValid());
 }
 
+TEST(step_dir_zero_commanded_position_requires_enabled_idle_motor) {
+    StepDirRig r;
+    CHECK(!r.motor1.zeroCommandedPosition());
+    CHECK(!r.motor1.enabled());
+    CHECK_EQ(r.motor1.commandedPosition256(), 0);
+
+    r.motor1.enable(true);
+    CHECK(r.motor1.moveRelative(20, 100, 100, 100));
+    r.tick(2);
+    CHECK(r.out1.running());
+    CHECK(r.out1.pump(10) > 0);
+    CHECK(!r.motor1.zeroCommandedPosition());
+
+    r.motor1.hold();
+    CHECK(!r.motor1.zeroCommandedPosition());
+    CHECK(r.out1.pump(100000) > 0);
+    CHECK(!r.out1.running());
+    CHECK(!r.motor1.zeroCommandedPosition());  // Move completion is finalized by update().
+    r.tick();
+
+    CHECK(r.motor1.commandedPositionValid());
+    CHECK(r.motor1.commandedPosition256() > 0);
+    const uint32_t starts = r.out1.starts;
+    const uint32_t stops = r.out1.stops;
+    CHECK(r.motor1.zeroCommandedPosition());
+    CHECK_EQ(r.motor1.commandedPosition256(), 0);
+    CHECK(r.motor1.commandedPositionValid());
+    CHECK(r.motor1.enabled());
+    CHECK(!r.out1.running());
+    CHECK_EQ(r.out1.starts, starts);
+    CHECK_EQ(r.out1.stops, stops);
+}
+
+TEST(step_dir_zero_commanded_position_refuses_velocity_and_running_output) {
+    StepDirRig r;
+    r.motor1.enable(true);
+    CHECK(r.motor1.setVelocity(100));
+    CHECK(!r.motor1.zeroCommandedPosition());
+    r.tick(2);
+    CHECK(r.out1.running());
+    CHECK(r.out1.pump(10) > 0);
+    r.motor1.hold();
+    CHECK(!r.motor1.zeroCommandedPosition());
+    CHECK(r.out1.pump(100000) > 0);
+    CHECK(!r.out1.running());
+    CHECK(r.motor1.zeroCommandedPosition());
+    CHECK_EQ(r.motor1.commandedPosition256(), 0);
+    CHECK(r.motor1.commandedPositionValid());
+}
+
 TEST(step_dir_waits_for_its_setup_time) {
     StepDirRig r;
     r.motor1.settings.dirSetupUs = 50000;  // 2.5 ticks at 50 Hz
@@ -611,5 +661,14 @@ TEST(step_dir_relative_move_tree_action_and_observations) {
     r.tick();
     CHECK_EQ(r.get("/a/moveState").body, "\"complete\"");
     CHECK_EQ(r.get("/a/commandedPosition256").body, "192");
+    CHECK_EQ(r.get("/a/commandedPositionValid").body, "true");
+}
+
+TEST(step_dir_zero_commanded_position_tree_action) {
+    StepDirTreeRig r;
+    CHECK(r.action("/a/zeroCommandedPosition", "{}").status == tesser::Status::NotAllowed);
+    CHECK(r.set("/a/enabled", "true").status == tesser::Status::Ok);
+    CHECK(r.action("/a/zeroCommandedPosition", "{}").status == tesser::Status::Ok);
+    CHECK_EQ(r.get("/a/commandedPosition256").body, "0");
     CHECK_EQ(r.get("/a/commandedPositionValid").body, "true");
 }

@@ -115,6 +115,16 @@ void describe(Object& o, StepDirMotor& m) {
     o.value("commandedPositionValid", [&m] { return m.commandedPositionValid(); })
         .watch()
         .doc("False after untracked velocity pulses, a mid-move MRES change, or an abrupt in-flight interruption");
+    o.action("zeroCommandedPosition",
+             [&m]() -> Check {
+                 Check c = claimed(m);
+                 if (!c.isOk()) return c;
+                 if (!m.zeroCommandedPosition()) {
+                     return Check::fail(Status::NotAllowed, "zero refused: motor must be enabled and idle");
+                 }
+                 return Check::ok();
+             })
+        .doc("Asserts the current shaft position is zero; enabled and idle, does not move or home the motor");
     o.value("moveState", [&m] { return std::string(moveStateName(m.moveState())); })
         .watch()
         .doc("Relative move state: idle, running, stopping, complete, cancelled, interrupted, or failed");
