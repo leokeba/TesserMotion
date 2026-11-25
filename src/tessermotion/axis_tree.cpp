@@ -46,8 +46,8 @@ void describe(Object& o, Axis& a) {
             return c;
         };
     };
-    o.action("jogMinus", jog(-1)).label("Jog −").ui("widget", "hold");
-    o.action("jogPlus", jog(1)).label("Jog +").ui("widget", "hold");
+    o.action("jogMinus", jog(-1)).label("Jog −").ui("widget", "hold").ui("enabledWhen", "claimed=false");
+    o.action("jogPlus", jog(1)).label("Jog +").ui("widget", "hold").ui("enabledWhen", "claimed=false");
     o.value("position", [&a] { return a.position(); }).unit("°").step(0.01).watch().ui("widget", "chart");
     o.value(
          "target", [&a] { return a.target(); },
@@ -59,9 +59,12 @@ void describe(Object& o, Axis& a) {
         .range(0, 360)
         .unit("°")
         .step(0.01)
-        .watch();
+        .watch()
+        .ui("enabledWhen", "claimed=false");
     o.value("error", [&a] { return a.error(); }).unit("°").watch();
     o.value("output", [&a] { return a.output(); }).watch().ui("widget", "chart");
+    o.value("claimed", [&a] { return !a.owner().empty(); }).watch()
+        .doc("True while a sequence or tracker drives the axis; its controls refuse writes then");
 
     DcMotor& m = a.motor();
     auto& motor = o.object("motor");

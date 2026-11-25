@@ -62,6 +62,7 @@ void describe(Object& o, StepDirMotor& m) {
              return Check::ok();
          })
         .watch()
+        .ui("enabledWhen", "claimed=false")
         .doc("The enable line, shared by the group: enabling one motor enables them all");
     o.value(
          "velocity", [&m] { return m.velocity(); },
@@ -75,6 +76,7 @@ void describe(Object& o, StepDirMotor& m) {
         .unit("µsteps/s")
         .watch()
         .ui("keepalive", 400)
+        .ui("enabledWhen", "claimed=false")
         .doc("Turns the motor, for the deadman time unless rewritten");
     o.action("stop",
              [&m]() -> Check {
@@ -83,7 +85,8 @@ void describe(Object& o, StepDirMotor& m) {
                  return c;
              })
         .doc("Ramps a velocity to a stop, or decelerates and drains a relative move; enabled")
-        .ui("icon", "stop");
+        .ui("icon", "stop")
+        .ui("enabledWhen", "claimed=false");
     o.action("moveRelative",
              [&m](JsonVariantConst arg) -> Check {
                  if (!arg.is<JsonObjectConst>()) {
@@ -106,7 +109,8 @@ void describe(Object& o, StepDirMotor& m) {
                  }
                  return Check::ok();
              })
-        .doc("Moves an exact number of STEP pulses; maxSpeed is µsteps/s, acceleration and deceleration are µsteps/s²");
+        .doc("Moves an exact number of STEP pulses; maxSpeed is µsteps/s, acceleration and deceleration are µsteps/s²")
+        .ui("enabledWhen", "claimed=false");
     o.value("commandedPosition256", [&m] { return m.commandedPosition256(); })
         .unit("1/256 full-step")
         .watch()
@@ -124,7 +128,8 @@ void describe(Object& o, StepDirMotor& m) {
                  }
                  return Check::ok();
              })
-        .doc("Asserts the current shaft position is zero; enabled and idle, does not move or home the motor");
+        .doc("Asserts the current shaft position is zero; enabled and idle, does not move or home the motor")
+        .ui("enabledWhen", "claimed=false");
     o.value("moveState", [&m] { return std::string(moveStateName(m.moveState())); })
         .watch()
         .doc("Relative move state: idle, running, stopping, complete, cancelled, interrupted, or failed");
@@ -141,6 +146,8 @@ void describe(Object& o, StepDirMotor& m) {
         .doc("The resolution velocities count in: the chip's MRES, which is also its STEP's");
     o.value("present", [&m] { return m.present(); }).watch().doc("The chip answers");
     o.value("owner", [&m] { return m.owner(); }).doc("The application that drives the motor, if any");
+    o.value("claimed", [&m] { return !m.owner().empty(); }).watch()
+        .doc("True while an application drives the motor; its controls refuse writes then");
 
     auto& settings = o.object("settings").persist().label("Settings").ui("collapsed");
     setting(settings, "maxSpeed", m, m.settings.maxSpeed).range(1, 51200).unit("µsteps/s");

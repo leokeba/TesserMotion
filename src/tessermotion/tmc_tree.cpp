@@ -141,6 +141,7 @@ void describeControls(Object& o, TmcDriver& d) {
              return Check::ok();
          })
         .watch()
+        .ui("enabledWhen", "claimed=false")
         .doc("The power stage: off, the motor turns freely and loses its position");
     o.value(
          "velocity", [&d] { return d.velocity(); },
@@ -155,6 +156,7 @@ void describeControls(Object& o, TmcDriver& d) {
         .unit("µsteps/s")
         .watch()
         .ui("keepalive", 400)  // the client renews it well within the deadman (500 ms or more)
+        .ui("enabledWhen", "claimed=false")
         .doc("Turns the motor, for the deadman time unless rewritten");
     o.action("stop",
              [&d]() -> Check {
@@ -163,12 +165,15 @@ void describeControls(Object& o, TmcDriver& d) {
                  return c;
              })
         .doc("Stops the motor, which holds where it stopped")
-        .ui("icon", "stop");
+        .ui("icon", "stop")
+        .ui("enabledWhen", "claimed=false");
     o.value("actualVelocity", [&d] { return d.actualVelocity(); })
         .unit("µsteps/s")
         .watch()
         .ui("widget", "chart")
         .doc("The velocity now: the TMC5160's, or the TMC2209's ramp");
+    o.value("claimed", [&d] { return !d.owner().empty(); }).watch()
+        .doc("True while an application drives the driver; its controls refuse writes then");
 }
 
 void describeStatus(Object& o, TmcDriver& d) {
@@ -313,6 +318,7 @@ void describe(Object& o, Tmc5160& d) {
          })
         .unit("µsteps")
         .watch()
+        .ui("enabledWhen", "claimed=false")
         .doc("Moves there at the ramp's speed");
     o.value("position", [&d] { return d.position(); }).unit("µsteps").watch().ui("widget", "chart");
     describeStatus(o, d);
